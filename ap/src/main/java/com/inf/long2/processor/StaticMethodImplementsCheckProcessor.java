@@ -725,18 +725,15 @@ public final class StaticMethodImplementsCheckProcessor
                 return types.isSameType(actual, implementation.asType());
             }
 
-            if (!types.isSameType(
-                    types.erasure(expected),
-                    types.erasure(actual))) {
+            if (!expectedDeclared.asElement().equals(actualDeclared.asElement())) {
                 return false;
             }
 
-            // A nested declared type's enclosing type is part of its
-            // identity, e.g. Outer<String>.Inner vs Outer<Integer>.Inner.
+            // 静态嵌套类型没有外部实例；部分编译器仍提供外部类型，不能据此替换其声明所属类型。
             TypeMirror expectedEnclosing = expectedDeclared.getEnclosingType();
             TypeMirror actualEnclosing = actualDeclared.getEnclosingType();
 
-            if (!sameEnclosingType(
+            if (hasEnclosingInstance(expectedDeclared) && !sameEnclosingType(
                     expectedEnclosing,
                     actualEnclosing,
                     contract,
@@ -771,6 +768,15 @@ public final class StaticMethodImplementsCheckProcessor
         }
 
         return types.isSameType(expected, actual);
+    }
+
+    private boolean hasEnclosingInstance(DeclaredType type) {
+        TypeElement declaration = (TypeElement) type.asElement();
+        return declaration.getKind() == ElementKind.CLASS
+                && !declaration.getModifiers().contains(Modifier.STATIC)
+                && declaration.getEnclosingElement() instanceof TypeElement owner
+                && owner.getKind() != ElementKind.INTERFACE
+                && owner.getKind() != ElementKind.ANNOTATION_TYPE;
     }
 
     private int methodTypeParameterIndex(
@@ -983,11 +989,11 @@ public final class StaticMethodImplementsCheckProcessor
 
             String rawName;
 
-            if (enclosing.getKind() != TypeKind.NONE) {
+            if (hasEnclosingInstance(declared) && enclosing.getKind() != TypeKind.NONE) {
                 rawName = displayType(enclosing, contract, implementation, mode)
                         + "." + declaredElement.getSimpleName();
             } else {
-                rawName = types.erasure(type).toString();
+                rawName = declaredElement.getQualifiedName().toString();
             }
 
             List<? extends TypeMirror> arguments = declared.getTypeArguments();

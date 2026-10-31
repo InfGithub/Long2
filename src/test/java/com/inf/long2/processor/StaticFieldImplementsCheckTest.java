@@ -127,6 +127,59 @@ class StaticFieldImplementsCheckTest extends ProcessorTestSupport {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"class Format {}", "record Format(int precision) {}", "enum Format { VALUE }",
+            "interface Format {}", "@interface Format {}"})
+    void acceptsInheritedStaticNestedTypeNames(String declaration) throws IOException {
+        assertCompiles("""
+                interface Contract {
+                    %s
+                    @StaticFieldImplementsCheck Format FORMAT = null;
+                }
+                class Impl implements Contract {
+                    public static final Format FORMAT = null;
+                }
+                """.formatted(declaration));
+    }
+
+    @Test
+    void displaysStaticNestedDeclarationOwner() throws IOException {
+        Compilation result = compile("""
+                interface Contract {
+                    record Format(int precision) {}
+                    @StaticFieldImplementsCheck Format FORMAT = null;
+                }
+                class Impl implements Contract {}
+                """);
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains("must declare: public static fixture.Contract.Format FORMAT"), result.messages());
+        assertFalse(result.messages().contains("fixture.Impl.Format"), result.messages());
+    }
+
+    @Test
+    void checksStaticNestedGenericArguments() throws IOException {
+        assertCompiles("""
+                interface Contract {
+                    class Holder<T> {}
+                    @StaticFieldImplementsCheck Holder<Contract> VALUE = null;
+                }
+                class Impl implements Contract {
+                    public static final Holder<Impl> VALUE = null;
+                }
+                """);
+        Compilation result = compile("""
+                interface Contract {
+                    class Holder<T> {}
+                    @StaticFieldImplementsCheck Holder<Contract> VALUE = null;
+                }
+                class Impl implements Contract {
+                    public static final Holder<Contract> VALUE = null;
+                }
+                """);
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains("fixture.Contract.Holder<fixture.Impl> VALUE"), result.messages());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {
             "class Invalid { @StaticFieldImplementsCheck public static Invalid ZERO; }",
             "enum Invalid { @StaticFieldImplementsCheck ZERO }",
