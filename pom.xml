@@ -18,6 +18,12 @@
 
     <dependencies>
         <dependency>
+            <groupId>com.inf.long2</groupId>
+            <artifactId>int-contract-processor</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>

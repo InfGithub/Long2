@@ -37,9 +37,12 @@ public final class StaticMethodImplementsCheckProcessor
 
     private static final String HAVE_TO_IMPLEMENTS_ANNOTATION_NAME = "com.inf.long2.util.annotations.HaveToImplements";
 
+    private static final String STATIC_FIELD_ANNOTATION_NAME = "com.inf.long2.util.annotations.StaticFieldImplementsCheck";
+
     private final Set<String> checkedImplementations = new HashSet<>();
     private final Set<String> reportedInvalidContracts = new HashSet<>();
     private final Set<String> reportedInvalidInstanceContracts = new HashSet<>();
+    private final Set<String> reportedInvalidFieldContracts = new HashSet<>();
 
     private Types types;
     private Elements elements;
@@ -83,6 +86,7 @@ public final class StaticMethodImplementsCheckProcessor
         }
 
         validateAnnotatedInstanceMethods(type);
+        validateAnnotatedFields(type);
 
         if (isConcreteType(type)) {
             String name = type.getQualifiedName().toString();
@@ -146,8 +150,87 @@ public final class StaticMethodImplementsCheckProcessor
             }
 
             checkHaveToImplementsContracts(parent, implementation);
+            checkStaticFieldContracts(parent, implementation);
             collectContracts(parentType, implementation, visitedTypes);
         }
+    }
+
+    private void validateAnnotatedFields(TypeElement owner) {
+        for (Element field : owner.getEnclosedElements()) {
+            if (hasAnnotation(field, STATIC_FIELD_ANNOTATION_NAME)) {
+                isValidFieldContract(field);
+            }
+        }
+    }
+
+    private boolean isValidFieldContract(Element field) {
+        Element enclosing = field.getEnclosingElement();
+        Set<Modifier> modifiers = field.getModifiers();
+
+        if (field.getKind() == ElementKind.FIELD
+                && enclosing instanceof TypeElement owner
+                && owner.getKind() == ElementKind.INTERFACE
+                && modifiers.contains(Modifier.PUBLIC)
+                && modifiers.contains(Modifier.STATIC)) {
+            return true;
+        }
+
+        String key = enclosing + "#" + field.getSimpleName();
+        if (reportedInvalidFieldContracts.add(key)) {
+            processingEnv.getMessager().printMessage(
+                    Diagnostic.Kind.ERROR,
+                    "@" + STATIC_FIELD_ANNOTATION_NAME
+                            + " may only annotate public static fields declared in interfaces: "
+                            + key,
+                    field);
+        }
+        return false;
+    }
+
+    private void checkStaticFieldContracts(
+            TypeElement contract,
+            TypeElement implementation) {
+
+        for (Element required : contract.getEnclosedElements()) {
+            if (!hasAnnotation(required, STATIC_FIELD_ANNOTATION_NAME)
+                    || !isValidFieldContract(required)) {
+                continue;
+            }
+
+            if (!hasStaticFieldImplementation(required, contract, implementation)) {
+                processingEnv.getMessager().printMessage(
+                        Diagnostic.Kind.ERROR,
+                        "Class " + implementation.getQualifiedName()
+                                + " must declare: public static "
+                                + displayType(required.asType(), contract, implementation)
+                                + " " + required.getSimpleName()
+                                + " (contract: " + contract.getQualifiedName() + ")",
+                        implementation);
+            }
+        }
+    }
+
+    private boolean hasStaticFieldImplementation(
+            Element required,
+            TypeElement contract,
+            TypeElement implementation) {
+
+        for (Element actual : implementation.getEnclosedElements()) {
+            if (actual.getKind() != ElementKind.FIELD
+                    || !required.getSimpleName().contentEquals(actual.getSimpleName())
+                    || elements.getOrigin(actual) != Origin.EXPLICIT) {
+                continue;
+            }
+
+            Set<Modifier> modifiers = actual.getModifiers();
+            if (modifiers.contains(Modifier.PUBLIC)
+                    && modifiers.contains(Modifier.STATIC)
+                    && sameType(required.asType(), actual.asType(), contract, implementation,
+                            List.of(), List.of())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean hasAnnotation(Element element, String qualifiedName) {
@@ -451,8 +534,8 @@ public final class StaticMethodImplementsCheckProcessor
                         actualBounds.get(j),
                         contract,
                         implementation,
-                        required,
-                        actual)) {
+                        requiredGenerics,
+                        actualGenerics)) {
                     return false;
                 }
             }
@@ -467,8 +550,8 @@ public final class StaticMethodImplementsCheckProcessor
                     found,
                     contract,
                     implementation,
-                    required,
-                    actual)) {
+                    requiredGenerics,
+                    actualGenerics)) {
                 return false;
             }
         }
@@ -478,8 +561,8 @@ public final class StaticMethodImplementsCheckProcessor
                 actual.getReturnType(),
                 contract,
                 implementation,
-                required,
-                actual);
+                requiredGenerics,
+                actualGenerics);
     }
 
     private boolean sameType(
@@ -487,8 +570,8 @@ public final class StaticMethodImplementsCheckProcessor
             TypeMirror actual,
             TypeElement contract,
             TypeElement implementation,
-            ExecutableElement requiredMethod,
-            ExecutableElement actualMethod) {
+            List<? extends TypeParameterElement> requiredParameters,
+            List<? extends TypeParameterElement> actualParameters) {
 
         TypeKind expectedKind = expected.getKind();
         TypeKind actualKind = actual.getKind();
@@ -499,8 +582,8 @@ public final class StaticMethodImplementsCheckProcessor
          */
         if (expectedKind == TypeKind.TYPEVAR
                 || actualKind == TypeKind.TYPEVAR) {
-            int expectedIndex = methodTypeParameterIndex(expected, requiredMethod);
-            int actualIndex = methodTypeParameterIndex(actual, actualMethod);
+            int expectedIndex = methodTypeParameterIndex(expected, requiredParameters);
+            int actualIndex = methodTypeParameterIndex(actual, actualParameters);
 
             if (expectedIndex >= 0 || actualIndex >= 0) {
                 return expectedIndex >= 0 && expectedIndex == actualIndex;
@@ -519,8 +602,8 @@ public final class StaticMethodImplementsCheckProcessor
                     ((ArrayType) actual).getComponentType(),
                     contract,
                     implementation,
-                    requiredMethod,
-                    actualMethod);
+                    requiredParameters,
+                    actualParameters);
         }
 
         if (expectedKind == TypeKind.WILDCARD) {
@@ -532,15 +615,15 @@ public final class StaticMethodImplementsCheckProcessor
                     actualWildcard.getExtendsBound(),
                     contract,
                     implementation,
-                    requiredMethod,
-                    actualMethod)
+                    requiredParameters,
+                    actualParameters)
                     && nullableSameType(
                             expectedWildcard.getSuperBound(),
                             actualWildcard.getSuperBound(),
                             contract,
                             implementation,
-                            requiredMethod,
-                            actualMethod);
+                            requiredParameters,
+                            actualParameters);
         }
 
         if (expectedKind == TypeKind.INTERSECTION) {
@@ -557,8 +640,8 @@ public final class StaticMethodImplementsCheckProcessor
                         actualBounds.get(i),
                         contract,
                         implementation,
-                        requiredMethod,
-                        actualMethod)) {
+                        requiredParameters,
+                        actualParameters)) {
                     return false;
                 }
             }
@@ -591,8 +674,8 @@ public final class StaticMethodImplementsCheckProcessor
                     actualEnclosing,
                     contract,
                     implementation,
-                    requiredMethod,
-                    actualMethod)) {
+                    requiredParameters,
+                    actualParameters)) {
                 return false;
             }
 
@@ -609,8 +692,8 @@ public final class StaticMethodImplementsCheckProcessor
                         actualArguments.get(i),
                         contract,
                         implementation,
-                        requiredMethod,
-                        actualMethod)) {
+                        requiredParameters,
+                        actualParameters)) {
                     return false;
                 }
             }
@@ -623,13 +706,11 @@ public final class StaticMethodImplementsCheckProcessor
 
     private int methodTypeParameterIndex(
             TypeMirror type,
-            ExecutableElement method) {
+            List<? extends TypeParameterElement> parameters) {
 
         if (type.getKind() != TypeKind.TYPEVAR) {
             return -1;
         }
-
-        List<? extends TypeParameterElement> parameters = method.getTypeParameters();
 
         for (int i = 0; i < parameters.size(); i++) {
             if (types.isSameType(type, parameters.get(i).asType())) {
@@ -645,8 +726,8 @@ public final class StaticMethodImplementsCheckProcessor
             TypeMirror actual,
             TypeElement contract,
             TypeElement implementation,
-            ExecutableElement requiredMethod,
-            ExecutableElement actualMethod) {
+            List<? extends TypeParameterElement> requiredParameters,
+            List<? extends TypeParameterElement> actualParameters) {
 
         boolean expectedNone = expected.getKind() == TypeKind.NONE;
         boolean actualNone = actual.getKind() == TypeKind.NONE;
@@ -660,8 +741,8 @@ public final class StaticMethodImplementsCheckProcessor
                 actual,
                 contract,
                 implementation,
-                requiredMethod,
-                actualMethod);
+                requiredParameters,
+                actualParameters);
     }
 
     private boolean nullableSameType(
@@ -669,8 +750,8 @@ public final class StaticMethodImplementsCheckProcessor
             TypeMirror actual,
             TypeElement contract,
             TypeElement implementation,
-            ExecutableElement requiredMethod,
-            ExecutableElement actualMethod) {
+            List<? extends TypeParameterElement> requiredParameters,
+            List<? extends TypeParameterElement> actualParameters) {
 
         if (expected == null || actual == null) {
             return expected == actual;
@@ -681,8 +762,8 @@ public final class StaticMethodImplementsCheckProcessor
                 actual,
                 contract,
                 implementation,
-                requiredMethod,
-                actualMethod);
+                requiredParameters,
+                actualParameters);
     }
 
     private boolean isContractSelfType(
