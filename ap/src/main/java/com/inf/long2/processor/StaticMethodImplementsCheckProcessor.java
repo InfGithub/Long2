@@ -39,10 +39,18 @@ public final class StaticMethodImplementsCheckProcessor
 
     private static final String STATIC_FIELD_ANNOTATION_NAME = "com.inf.long2.util.annotations.StaticFieldImplementsCheck";
 
+    private static final String KEEP_CONTRACT_TYPE_ANNOTATION_NAME = "com.inf.long2.util.annotations.KeepContractType";
+
+    private enum SelfTypeMode {
+        SUBSTITUTE,
+        PRESERVE
+    }
+
     private final Set<String> checkedImplementations = new HashSet<>();
     private final Set<String> reportedInvalidContracts = new HashSet<>();
     private final Set<String> reportedInvalidInstanceContracts = new HashSet<>();
     private final Set<String> reportedInvalidFieldContracts = new HashSet<>();
+    private final Set<String> reportedInvalidParameterContracts = new HashSet<>();
 
     private Types types;
     private Elements elements;
@@ -87,6 +95,7 @@ public final class StaticMethodImplementsCheckProcessor
 
         validateAnnotatedInstanceMethods(type);
         validateAnnotatedFields(type);
+        validateKeepContractTypeParameters(type);
 
         if (isConcreteType(type)) {
             String name = type.getQualifiedName().toString();
@@ -139,6 +148,7 @@ public final class StaticMethodImplementsCheckProcessor
                 continue;
             }
 
+            validateKeepContractTypeParameters(parent);
             if (hasContractAnnotation(parent)) {
                 if (parent.getKind() == ElementKind.INTERFACE) {
                     checkContract(parent, implementation);
@@ -231,6 +241,45 @@ public final class StaticMethodImplementsCheckProcessor
             }
         }
         return false;
+    }
+
+    private void validateKeepContractTypeParameters(TypeElement owner) {
+        for (Element element : owner.getEnclosedElements()) {
+            if (!(element instanceof ExecutableElement method)) {
+                continue;
+            }
+
+            for (Element parameter : method.getParameters()) {
+                if (!hasAnnotation(parameter, KEEP_CONTRACT_TYPE_ANNOTATION_NAME)) {
+                    continue;
+                }
+
+                Set<Modifier> modifiers = method.getModifiers();
+                if (owner.getKind() == ElementKind.INTERFACE
+                        && hasContractAnnotation(owner)
+                        && method.getKind() == ElementKind.METHOD
+                        && modifiers.contains(Modifier.PUBLIC)
+                        && modifiers.contains(Modifier.STATIC)) {
+                    continue;
+                }
+
+                String key = methodKey(method) + "#" + parameter.getSimpleName();
+                if (reportedInvalidParameterContracts.add(key)) {
+                    processingEnv.getMessager().printMessage(
+                            Diagnostic.Kind.ERROR,
+                            "@" + KEEP_CONTRACT_TYPE_ANNOTATION_NAME
+                                    + " may only annotate parameters of public static methods declared in interfaces annotated with @"
+                                    + ANNOTATION_NAME,
+                            parameter);
+                }
+            }
+        }
+    }
+
+    private SelfTypeMode parameterMode(Element parameter) {
+        return hasAnnotation(parameter, KEEP_CONTRACT_TYPE_ANNOTATION_NAME)
+                ? SelfTypeMode.PRESERVE
+                : SelfTypeMode.SUBSTITUTE;
     }
 
     private boolean hasAnnotation(Element element, String qualifiedName) {
@@ -551,7 +600,8 @@ public final class StaticMethodImplementsCheckProcessor
                     contract,
                     implementation,
                     requiredGenerics,
-                    actualGenerics)) {
+                    actualGenerics,
+                    parameterMode(required.getParameters().get(i)))) {
                 return false;
             }
         }
@@ -572,6 +622,19 @@ public final class StaticMethodImplementsCheckProcessor
             TypeElement implementation,
             List<? extends TypeParameterElement> requiredParameters,
             List<? extends TypeParameterElement> actualParameters) {
+
+        return sameType(expected, actual, contract, implementation,
+                requiredParameters, actualParameters, SelfTypeMode.SUBSTITUTE);
+    }
+
+    private boolean sameType(
+            TypeMirror expected,
+            TypeMirror actual,
+            TypeElement contract,
+            TypeElement implementation,
+            List<? extends TypeParameterElement> requiredParameters,
+            List<? extends TypeParameterElement> actualParameters,
+            SelfTypeMode mode) {
 
         TypeKind expectedKind = expected.getKind();
         TypeKind actualKind = actual.getKind();
@@ -603,7 +666,8 @@ public final class StaticMethodImplementsCheckProcessor
                     contract,
                     implementation,
                     requiredParameters,
-                    actualParameters);
+                    actualParameters,
+                    mode);
         }
 
         if (expectedKind == TypeKind.WILDCARD) {
@@ -616,14 +680,16 @@ public final class StaticMethodImplementsCheckProcessor
                     contract,
                     implementation,
                     requiredParameters,
-                    actualParameters)
+                    actualParameters,
+                    mode)
                     && nullableSameType(
                             expectedWildcard.getSuperBound(),
                             actualWildcard.getSuperBound(),
                             contract,
                             implementation,
                             requiredParameters,
-                            actualParameters);
+                            actualParameters,
+                            mode);
         }
 
         if (expectedKind == TypeKind.INTERSECTION) {
@@ -641,7 +707,8 @@ public final class StaticMethodImplementsCheckProcessor
                         contract,
                         implementation,
                         requiredParameters,
-                        actualParameters)) {
+                        actualParameters,
+                        mode)) {
                     return false;
                 }
             }
@@ -653,8 +720,8 @@ public final class StaticMethodImplementsCheckProcessor
             DeclaredType expectedDeclared = (DeclaredType) expected;
             DeclaredType actualDeclared = (DeclaredType) actual;
 
-            // Any use of the annotated contract type is its Self Type.
-            if (isContractSelfType(expected, contract)) {
+            // 参数的保留规则覆盖整个类型树；未保留的位置继续把契约自身类型替换为实现类类型。
+            if (mode == SelfTypeMode.SUBSTITUTE && isContractSelfType(expected, contract)) {
                 return types.isSameType(actual, implementation.asType());
             }
 
@@ -675,7 +742,8 @@ public final class StaticMethodImplementsCheckProcessor
                     contract,
                     implementation,
                     requiredParameters,
-                    actualParameters)) {
+                    actualParameters,
+                    mode)) {
                 return false;
             }
 
@@ -693,7 +761,8 @@ public final class StaticMethodImplementsCheckProcessor
                         contract,
                         implementation,
                         requiredParameters,
-                        actualParameters)) {
+                        actualParameters,
+                        mode)) {
                     return false;
                 }
             }
@@ -727,7 +796,8 @@ public final class StaticMethodImplementsCheckProcessor
             TypeElement contract,
             TypeElement implementation,
             List<? extends TypeParameterElement> requiredParameters,
-            List<? extends TypeParameterElement> actualParameters) {
+            List<? extends TypeParameterElement> actualParameters,
+            SelfTypeMode mode) {
 
         boolean expectedNone = expected.getKind() == TypeKind.NONE;
         boolean actualNone = actual.getKind() == TypeKind.NONE;
@@ -742,7 +812,8 @@ public final class StaticMethodImplementsCheckProcessor
                 contract,
                 implementation,
                 requiredParameters,
-                actualParameters);
+                actualParameters,
+                mode);
     }
 
     private boolean nullableSameType(
@@ -751,7 +822,8 @@ public final class StaticMethodImplementsCheckProcessor
             TypeElement contract,
             TypeElement implementation,
             List<? extends TypeParameterElement> requiredParameters,
-            List<? extends TypeParameterElement> actualParameters) {
+            List<? extends TypeParameterElement> actualParameters,
+            SelfTypeMode mode) {
 
         if (expected == null || actual == null) {
             return expected == actual;
@@ -763,7 +835,8 @@ public final class StaticMethodImplementsCheckProcessor
                 contract,
                 implementation,
                 requiredParameters,
-                actualParameters);
+                actualParameters,
+                mode);
     }
 
     private boolean isContractSelfType(
@@ -805,6 +878,7 @@ public final class StaticMethodImplementsCheckProcessor
         for (int i = 0; i < methodParameters.size(); i++) {
             Element parameter = methodParameters.get(i);
             TypeMirror parameterType = parameter.asType();
+            SelfTypeMode mode = staticMethod ? parameterMode(parameter) : SelfTypeMode.SUBSTITUTE;
             String typeText;
 
             if (method.isVarArgs()
@@ -813,12 +887,14 @@ public final class StaticMethodImplementsCheckProcessor
                 typeText = displayType(
                         ((ArrayType) parameterType).getComponentType(),
                         contract,
-                        implementation) + "...";
+                        implementation,
+                        mode) + "...";
             } else {
                 typeText = displayType(
                         parameterType,
                         contract,
-                        implementation);
+                        implementation,
+                        mode);
             }
 
             parameters.add(typeText + " " + parameter.getSimpleName());
@@ -879,16 +955,26 @@ public final class StaticMethodImplementsCheckProcessor
             TypeElement contract,
             TypeElement implementation) {
 
+        return displayType(type, contract, implementation, SelfTypeMode.SUBSTITUTE);
+    }
+
+    private String displayType(
+            TypeMirror type,
+            TypeElement contract,
+            TypeElement implementation,
+            SelfTypeMode mode) {
+
         if (type.getKind() == TypeKind.ARRAY) {
             return displayType(
                     ((ArrayType) type).getComponentType(),
                     contract,
-                    implementation) + "[]";
+                    implementation,
+                    mode) + "[]";
         }
 
         if (type.getKind() == TypeKind.DECLARED) {
-            if (isContractSelfType(type, contract)) {
-                return displayType(implementation.asType(), contract, implementation);
+            if (mode == SelfTypeMode.SUBSTITUTE && isContractSelfType(type, contract)) {
+                return displayType(implementation.asType(), contract, implementation, mode);
             }
 
             DeclaredType declared = (DeclaredType) type;
@@ -898,7 +984,7 @@ public final class StaticMethodImplementsCheckProcessor
             String rawName;
 
             if (enclosing.getKind() != TypeKind.NONE) {
-                rawName = displayType(enclosing, contract, implementation)
+                rawName = displayType(enclosing, contract, implementation, mode)
                         + "." + declaredElement.getSimpleName();
             } else {
                 rawName = types.erasure(type).toString();
@@ -914,7 +1000,7 @@ public final class StaticMethodImplementsCheckProcessor
 
             for (TypeMirror argument : arguments) {
                 formattedArguments.add(
-                        displayType(argument, contract, implementation));
+                        displayType(argument, contract, implementation, mode));
             }
 
             return rawName + "<" + formattedArguments + ">";
@@ -927,14 +1013,16 @@ public final class StaticMethodImplementsCheckProcessor
                 return "? extends " + displayType(
                         wildcard.getExtendsBound(),
                         contract,
-                        implementation);
+                        implementation,
+                        mode);
             }
 
             if (wildcard.getSuperBound() != null) {
                 return "? super " + displayType(
                         wildcard.getSuperBound(),
                         contract,
-                        implementation);
+                        implementation,
+                        mode);
             }
 
             return "?";
@@ -944,7 +1032,7 @@ public final class StaticMethodImplementsCheckProcessor
             StringJoiner bounds = new StringJoiner(" & ");
 
             for (TypeMirror bound : ((IntersectionType) type).getBounds()) {
-                bounds.add(displayType(bound, contract, implementation));
+                bounds.add(displayType(bound, contract, implementation, mode));
             }
 
             return bounds.toString();
