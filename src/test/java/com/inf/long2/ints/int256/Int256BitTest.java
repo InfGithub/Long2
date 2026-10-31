@@ -2,6 +2,9 @@ package com.inf.long2.ints.int256;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.math.BigInteger;
+import java.util.Random;
+
 import org.junit.jupiter.api.Test;
 
 import com.inf.long2.ints.Int256;
@@ -30,23 +33,63 @@ public class Int256BitTest {
                 Int256.of(-1L),
                 Int256.of(-2L).shift(-1));
 
-        // 左移溢出
+        // 位宽的整数倍归一化为零距离。
         assertEquals(
-                Int256.of(0L),
+                value,
                 value.shift(256));
 
-        // 右移超出位宽
         assertEquals(
-                Int256.of(-1L),
+                Int256.MIN_VALUE,
                 Int256.MIN_VALUE.shift(-256));
 
-        // int 最小值不会导致取负溢出
+        // int 最小值的数学绝对值为 2^31，对 256 取模仍为零。
         assertEquals(
-                Int256.of(-1L),
+                Int256.MIN_VALUE,
                 Int256.MIN_VALUE.shift(Integer.MIN_VALUE));
+
+        assertEquals(Int256.of(2L), value.shift(257));
+        assertEquals(Int256.of(4L), Int256.of(8L).shift(-257));
 
         // 不移位
         assertEquals(value, value.shift(0));
+    }
+
+    @Test
+    void testShiftAgainstBigInteger() {
+        Int256[] values = {
+                Int256.ZERO, Int256.ONE, Int256.of(-1L), Int256.MAX_VALUE, Int256.MIN_VALUE,
+                Int256.of(0x123456789abcdefL, -1L, Long.MIN_VALUE, 0x76543210fedcba98L),
+                Int256.of(-2L, 0L, Long.MAX_VALUE, 1L)
+        };
+        int[] magnitudes = {
+                0, 1, 31, 32, 63, 64, 65, 127, 128, 129, 191, 192, 193,
+                254, 255, 256, 257, 319, 320, 511, 512, 513, 1024, Integer.MAX_VALUE
+        };
+        for (Int256 value : values) {
+            for (int magnitude : magnitudes) {
+                assertShift(value, magnitude);
+                assertShift(value, -magnitude);
+            }
+            assertShift(value, Integer.MIN_VALUE);
+            assertShift(value, Integer.MIN_VALUE + 1);
+        }
+
+        Random random = new Random(0x25651F7L);
+        for (int i = 0; i < 1000; i++) {
+            Int256 value = Int256.of(random.nextLong(), random.nextLong(), random.nextLong(), random.nextLong());
+            assertShift(value, random.nextInt());
+        }
+    }
+
+    private static void assertShift(Int256 value, int bits) {
+        BigInteger unsigned = new BigInteger(value.toHexString().substring(2), 16);
+        BigInteger signed = value.isNegative() ? unsigned.subtract(BigInteger.ONE.shiftLeft(256)) : unsigned;
+        int distance = BigInteger.valueOf(bits).abs().mod(BigInteger.valueOf(256)).intValueExact();
+        BigInteger shifted = bits < 0 ? signed.shiftRight(distance) : signed.shiftLeft(distance);
+        Int256 expected = Int256.of(
+                shifted.shiftRight(192).longValue(), shifted.shiftRight(128).longValue(),
+                shifted.shiftRight(64).longValue(), shifted.longValue());
+        assertEquals(expected, value.shift(bits), () -> value.toHexString() + " shift " + bits);
     }
 
     @Test

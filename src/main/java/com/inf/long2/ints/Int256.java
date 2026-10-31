@@ -31,9 +31,9 @@ public final class Int256 implements Int<Int256> {
 
         long a0 = 0L, a1 = 0L, a2 = 0L, a3 = 0L;
 
-        if (exponent == 0x7ff) {
-            // fraction 非零时为 NaN，保留初始零；无穷按符号设置极值。
-            if (fraction == 0L) {
+        if (exponent >= 1023 + 255) {
+            // 绝对值达到 2^255 的有限值及无穷按符号钳制，负的 2^255 恰好为最小值；NaN 保留初始零。
+            if (exponent != 0x7ff || fraction == 0L) {
                 if (negative) {
                     a0 = Long.MIN_VALUE;
                 } else {
@@ -51,33 +51,30 @@ public final class Int256 implements Int<Int256> {
             } else {
                 int shift = e - 52;
 
-                // shift 达到 256 时所有有效位均已越界；否则仅保留落在四个 long 内的位。
-                if (shift < 256) {
-                    int n = shift & 63;
-                    long low = significand << n;
-                    long high = n == 0
-                            ? 0L
-                            : significand >>> (64 - n);
+                int n = shift & 63;
+                long low = significand << n;
+                long high = n == 0
+                        ? 0L
+                        : significand >>> (64 - n);
 
-                    switch (shift >>> 6) {
-                        case 0 -> {
-                            a3 = low;
-                            a2 = high;
-                        }
-                        case 1 -> {
-                            a2 = low;
-                            a1 = high;
-                        }
-                        case 2 -> {
-                            a1 = low;
-                            a0 = high;
-                        }
-                        case 3 -> a0 = low;
+                switch (shift >>> 6) {
+                    case 0 -> {
+                        a3 = low;
+                        a2 = high;
                     }
+                    case 1 -> {
+                        a2 = low;
+                        a1 = high;
+                    }
+                    case 2 -> {
+                        a1 = low;
+                        a0 = high;
+                    }
+                    case 3 -> a0 = low;
                 }
             }
 
-            // 保留低 256 位后取补码与先取负再截断等价，低组全零时才向高组传递加一进位。
+            // 按补码取负，低组全零时才向高组传递加一进位。
             if (negative) {
                 long b3 = a3, b2 = a2, b1 = a1;
 
@@ -488,15 +485,10 @@ public final class Int256 implements Int<Int256> {
 
     @Override
     public Int256 shift(int bits) {
-        if (bits == 0) {
+        // 先扩展为 long 再取绝对值，避免 Integer.MIN_VALUE 取负溢出。
+        int distance = (int) (Math.abs((long) bits) % 256);
+        if (distance == 0) {
             return this;
-        }
-        if (bits >= 256) {
-            return new Int256(0L);
-        }
-        // 在取负计算右移距离前处理超大距离，避免 Integer.MIN_VALUE 取负溢出。
-        if (bits <= -256) {
-            return new Int256(l0 >> 63);
         }
 
         long a = l0;
@@ -505,7 +497,7 @@ public final class Int256 implements Int<Int256> {
         long d = l3;
 
         if (bits > 0) {
-            switch (bits >>> 6) {
+            switch (distance >>> 6) {
                 case 1 -> {
                     a = b;
                     b = c;
@@ -524,7 +516,7 @@ public final class Int256 implements Int<Int256> {
             }
 
             // 整组搬移后再处理组内位移，跳过零距离，避免 Java 将移位 64 位解释为移位零位。
-            int n = bits & 63;
+            int n = distance & 63;
             if (n != 0) {
                 return new Int256(
                         (a << n) | (b >>> (64 - n)),
@@ -533,7 +525,6 @@ public final class Int256 implements Int<Int256> {
                         d << n);
             }
         } else {
-            int distance = -bits;
             long sign = a >> 63;
 
             switch (distance >>> 6) {

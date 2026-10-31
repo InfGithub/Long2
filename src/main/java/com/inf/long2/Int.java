@@ -67,7 +67,7 @@ public interface Int<T extends Int<T>> extends Comparable<T> {
     }
 
     /**
-     * 将有限 double 向零截断为整数，再保留低 W 位，超出数值范围时回绕。
+     * 将有限 double 向零截断为整数，结果超出数值范围时钳制到对应极值。
      * {@code NaN} 转为零，正负无穷分别转为最大值和最小值，正零和负零均转为零。
      */
     public static Int<?> of(double value) {
@@ -139,8 +139,8 @@ public interface Int<T extends Int<T>> extends Comparable<T> {
     /**
      * bits 为正时左移并在低位补零，为负时算术右移并在高位进行符号扩展，为零时保持数值。
      * 左移丢弃超出位宽的高位，右移丢弃低位；右移负数向负无穷取整。
-     * 移位距离不取模，左移距离达到 W 时结果为零，右移距离达到 W 时非负数为零、负数为负一。
-     * 所有 int 参数均有效，{@link Integer#MIN_VALUE} 表示超大距离右移。
+     * 实际距离为 bits 的数学绝对值对 W 取模，距离为零时保持数值。
+     * 所有 int 参数均有效，包括 {@link Integer#MIN_VALUE}，其绝对值按超出 int 范围的正数计算。
      */
     public T shift(int bits);
 

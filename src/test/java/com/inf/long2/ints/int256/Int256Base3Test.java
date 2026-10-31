@@ -12,6 +12,9 @@ import org.junit.jupiter.api.Test;
 import com.inf.long2.ints.Int256;
 
 public class Int256Base3Test {
+    private static final BigInteger MIN_VALUE = BigInteger.ONE.shiftLeft(255).negate();
+    private static final BigInteger MAX_VALUE = MIN_VALUE.negate().subtract(BigInteger.ONE);
+
     @Test
     void testDoubleBasic() {
         // 零与基本整数
@@ -63,11 +66,11 @@ public class Int256Base3Test {
         assertEquals(Int256.MIN_VALUE,
                 Int256.of(Double.NEGATIVE_INFINITY));
 
-        // 最大有限 double：按 256-bit 回绕
-        assertEquals(Int256.ZERO,
+        // 最大有限 double 超出范围，按符号钳制。
+        assertEquals(Int256.MAX_VALUE,
                 Int256.of(Double.MAX_VALUE));
 
-        assertEquals(Int256.ZERO,
+        assertEquals(Int256.MIN_VALUE,
                 Int256.of(-Double.MAX_VALUE));
     }
 
@@ -131,59 +134,46 @@ public class Int256Base3Test {
 
         // 指数和 significand 共同决定多个 bit
         double mixed = Double.longBitsToDouble(
-                ((long) (1023 + 255) << 52) | 1L);
+                ((long) (1023 + 254) << 52) | 1L);
 
         assertEquals(
-                Int256.of(Long.MIN_VALUE | (1L << 11),
+                Int256.of((1L << 62) | (1L << 10),
                         0L, 0L, 0L),
                 Int256.of(mixed));
     }
 
     @Test
     void testDoubleOverflow() {
-        double pow255 = Math.scalb(1.0, 255);
-        double pow256 = Math.scalb(1.0, 256);
+        double[] magnitudes = {
+                Math.scalb(1.0, 255),
+                Math.nextUp(Math.scalb(1.0, 255)),
+                Math.nextDown(Math.scalb(1.0, 256)),
+                Math.scalb(1.0, 256),
+                Math.nextUp(Math.scalb(1.0, 256)),
+                Math.scalb(1.0, 307),
+                Math.scalb(1.0, 308),
+                Double.MAX_VALUE
+        };
+        for (double magnitude : magnitudes) {
+            assertEquals(Int256.MAX_VALUE, Int256.of(magnitude));
+            assertEquals(Int256.MIN_VALUE, Int256.of(-magnitude));
+        }
+    }
 
-        // 有符号 256-bit 边界
-        assertEquals(Int256.MIN_VALUE,
-                Int256.of(pow255));
+    @Test
+    void testDoubleRangeBoundary() {
+        double boundary = Math.scalb(1.0, 255);
 
-        assertEquals(Int256.MIN_VALUE,
-                Int256.of(-pow255));
+        // 2^255 之下最近的 double 为 2^255 - 2^202，仍在有符号范围内。
+        assertEquals(Int256.of(Long.MAX_VALUE - 1023L, 0L, 0L, 0L),
+                Int256.of(Math.nextDown(boundary)));
+        assertEquals(Int256.of(Long.MIN_VALUE + 1024L, 0L, 0L, 0L),
+                Int256.of(Math.nextUp(-boundary)));
 
-        // 2^256 回绕为零
-        assertEquals(Int256.ZERO,
-                Int256.of(pow256));
-
-        assertEquals(Int256.ZERO,
-                Int256.of(-pow256));
-
-        // 2^256 之上最近的 double
-        // nextUp(2^256) = 2^256 + 2^204
-        assertEquals(
-                Int256.of(1L << 12, 0L, 0L, 0L),
-                Int256.of(Math.nextUp(pow256)));
-
-        // 2^256 之下最近的 double
-        // nextDown(2^256) = 2^256 - 2^203
-        assertEquals(
-                Int256.of(-(1L << 11), 0L, 0L, 0L),
-                Int256.of(Math.nextDown(pow256)));
-
-        // 负数对称回绕
-        assertEquals(
-                Int256.of(-(1L << 12), 0L, 0L, 0L),
-                Int256.of(-Math.nextUp(pow256)));
-
-        // 更大的 2 的整数次幂
-        assertEquals(Int256.ZERO,
-                Int256.of(Math.scalb(1.0, 307)));
-
-        assertEquals(Int256.ZERO,
-                Int256.of(Math.scalb(1.0, 308)));
-
-        assertEquals(Int256.ZERO,
-                Int256.of(-Math.scalb(1.0, 308)));
+        assertEquals(Int256.MAX_VALUE, Int256.of(boundary));
+        assertEquals(Int256.MAX_VALUE, Int256.of(Math.nextUp(boundary)));
+        assertEquals(Int256.MIN_VALUE, Int256.of(-boundary));
+        assertEquals(Int256.MIN_VALUE, Int256.of(Math.nextDown(-boundary)));
     }
 
     @Test
@@ -219,7 +209,7 @@ public class Int256Base3Test {
         }
     }
 
-    // 独立参考：精确取得 double 的整数部分并保留低 256 bit
+    // 用精确的十进制值取得整数部分，再按 BigInteger 边界钳制，独立于生产代码的指数分支。
     private static Int256 referenceDouble(double value) {
         if (Double.isNaN(value)) {
             return Int256.ZERO;
@@ -234,6 +224,12 @@ public class Int256Base3Test {
         }
 
         BigInteger integer = new BigDecimal(value).toBigInteger();
+        if (integer.compareTo(MAX_VALUE) > 0) {
+            return Int256.MAX_VALUE;
+        }
+        if (integer.compareTo(MIN_VALUE) < 0) {
+            return Int256.MIN_VALUE;
+        }
 
         return Int256.of(
                 integer.shiftRight(192).longValue(),
