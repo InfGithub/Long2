@@ -10,6 +10,21 @@ import com.inf.long2.Int;
  * 优化生产代码时保持此基线不变；契约变更须单独审查基线和预期结果。
  */
 public final class Binary256Baseline implements Binary<Binary256Baseline> {
+    // 字符串转换不属于冻结数值基线；这里只补齐新增接口契约，不充当转换测试的参考实现。
+    public static Binary256Baseline of(String value) {
+        throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
+    }
+
+    @Override
+    public String toScientificString() {
+        throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
+    }
+
+    @Override
+    public String toString() {
+        return super.toString();
+    }
+
     private static final int BIAS = 262143;
     private static final int QMIN = -262378;
     private static final long FRACTION_MASK = 0x0000_0fff_ffff_ffffL;

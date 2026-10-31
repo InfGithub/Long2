@@ -574,7 +574,7 @@ public final class Binary256 implements Binary<Binary256> {
     }
 
     /** 幅值最多 237 位；increment 表示最终舍入加一，额外进位归一化后再判断上溢。 */
-    private static Binary256 packRounded(boolean negative, long w0, long w1, long w2, long w3,
+    static Binary256 packRounded(boolean negative, long w0, long w1, long w2, long w3,
             long scale, boolean increment) {
         if (increment && ++w0 == 0 && ++w1 == 0 && ++w2 == 0) {
             w3++;
@@ -1277,6 +1277,21 @@ public final class Binary256 implements Binary<Binary256> {
         hash = 31 * hash + Long.hashCode(l1);
         hash = 31 * hash + Long.hashCode(l2);
         return 31 * hash + Long.hashCode(l3);
+    }
+
+    /** 从普通或科学计数法十进制文本直接按最近偶数规则舍入，详见 {@link Binary#of(String)}。 */
+    public static Binary256 of(String value) {
+        return Binary256Decimal.parse(value);
+    }
+
+    @Override
+    public String toString() {
+        return Binary256Decimal.format(this, false);
+    }
+
+    @Override
+    public String toScientificString() {
+        return Binary256Decimal.format(this, true);
     }
 
     private long primitiveBits(int precision, int emin, int emax, int exponentBits) {

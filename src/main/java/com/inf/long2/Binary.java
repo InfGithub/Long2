@@ -127,6 +127,20 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     }
 
     /**
+     * 从普通或科学计数法十进制文本的精确值直接舍入到目标格式，采用最近偶数规则。
+     * 有限数语法为 {@code [+-]?(digits(\.digits?)?|\.digits)([eE][+-]?digits)?}，
+     * digits 为至少一个 ASCII 数字；允许前导零，不接受空白、分隔符或类型后缀。
+     * 另接受大小写严格匹配的 {@code NaN}、{@code Infinity}、{@code +Infinity} 和 {@code -Infinity}。
+     * 保留零的符号，上溢和下溢按目标格式舍入；合法指数不因超出 int 或 long 范围而被拒绝。
+     *
+     * @throws NullPointerException 文本为 null
+     * @throws NumberFormatException 文本为空或不符合上述语法
+     */
+    static Binary<?> of(String value) {
+        return null;
+    }
+
+    /**
      * 从完整的有符号整数数值直接舍入到目标格式，整数零转换为正零。
      * 不得先通过 {@link Int#toDouble()} 转换，以免丢失源值精度或范围。
      */
@@ -217,6 +231,26 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     /** 与 equals 相等的值须返回相同的 hash，所有 NaN 忽略符号及 payload 差异，具体公式由实现类型决定。 */
     @HaveToImplements
     int hashCode();
+
+    /**
+     * 返回最短可往返十进制数的普通表示，不使用指数或区域格式。
+     * 在能由当前实现的 of(String) 最近偶数舍入恢复原值的十进制数中，先最小化有效数字位数，
+     * 再选择最接近原值者，距离相等时选择末位有效数字为偶数者。
+     * 去除多余前导零、小数部分末尾零和无用小数点；零返回 "0" 或 "-0"。
+     * 无穷返回 "Infinity" 或 "-Infinity"，所有 NaN 返回 "NaN"，不保留 NaN 编码信息。
+     * 普通表示可能因指数范围很大而包含大量补零。
+     */
+    @HaveToImplements
+    @Override
+    String toString();
+
+    /**
+     * 将与 toString() 相同的最短可往返十进制数写为科学计数法。
+     * 非零有限数的小数点前恰好一位，小数点后至少一位，使用小写 e，
+     * 指数不带多余前导零或正号，例如 "1.0e0"、"1.235e2"、"1.25e-3"。
+     * 正负零分别返回 "0.0e0" 和 "-0.0e0"，无穷和 NaN 的拼写与 toString() 相同。
+     */
+    String toScientificString();
 
     /**
      * 对精确和进行一次舍入，异号非零数精确抵消时得到正零，同号零相加保留符号。

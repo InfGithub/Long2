@@ -31,6 +31,7 @@ class BinaryContractTest extends ProcessorTestSupport {
             public static Target of(long value) { return null; }
             public static Target of(float value) { return null; }
             public static Target of(double value) { return null; }
+            public static Target of(java.lang.String value) { return null; }
             public static Target of(com.inf.long2.Int<?> value) { return null; }
             public static Target of(com.inf.long2.Binary<?> value) { return null; }
             """;
@@ -75,7 +76,7 @@ class BinaryContractTest extends ProcessorTestSupport {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"long", "float", "double", "com.inf.long2.Int<?>", "com.inf.long2.Binary<?>"})
+    @ValueSource(strings = {"long", "float", "double", "java.lang.String", "com.inf.long2.Int<?>", "com.inf.long2.Binary<?>"})
     void rejectsMissingStaticFactory(String parameterType) throws IOException {
         String declarations = DECLARATIONS.replace(
                 "public static Target of(" + parameterType + " value) { return null; }", "");
@@ -107,7 +108,7 @@ class BinaryContractTest extends ProcessorTestSupport {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"equals", "hashCode"})
+    @ValueSource(strings = {"equals", "hashCode", "toString"})
     void requiresExplicitObjectMethodContracts(String methodName) throws IOException {
         Compilation result = compile(fixture(DECLARATIONS, methodName));
         assertFalse(result.success(), result.messages());
