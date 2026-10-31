@@ -3,9 +3,8 @@ package com.inf.long2.ints;
 import com.inf.long2.Int;
 
 /**
- * 不可变的 256-bit 有符号定宽整数，采用 two's complement 表示。
- * 使用四个 long 按大端序排列，算术运算溢出时按 2^256 回绕。
- * 支持位运算、移位、加减乘、比较及多种字符串格式转换。
+ * 位宽为 256-bit 的 {@link Int} 实现，以四个 long 保存完整位模式。
+ * {@code l0} 为最高组，包含符号位；{@code l3} 为最低组。
  */
 public final class Int256 implements Int<Int256> {
     private final long l0;
@@ -24,10 +23,6 @@ public final class Int256 implements Int<Int256> {
         this.l3 = l3;
     }
 
-    /**
-     * 将 double 转换为 256-bit 有符号整数，小数向零截断。
-     * 有限值溢出时回绕，NaN 转为零，Infinity 转为对应极值。
-     */
     private Int256(double value) {
         long raw = Double.doubleToRawLongBits(value);
         int exponent = (int) ((raw >>> 52) & 0x7ffL);
@@ -37,7 +32,7 @@ public final class Int256 implements Int<Int256> {
         long a0 = 0L, a1 = 0L, a2 = 0L, a3 = 0L;
 
         if (exponent == 0x7ff) {
-            // NaN -> 0，Infinity -> 对应极值
+            // fraction 非零时为 NaN，保留初始零；无穷按符号设置极值。
             if (fraction == 0L) {
                 if (negative) {
                     a0 = Long.MIN_VALUE;
@@ -47,17 +42,16 @@ public final class Int256 implements Int<Int256> {
                 }
             }
         } else if (exponent >= 1023) {
-            // Normal double 的 53-bit significand
+            // 绝对值至少为一的有限 double 有隐含的最高位，补齐后得到 53-bit significand。
             long significand = (1L << 52) | fraction;
             int e = exponent - 1023;
 
             if (e <= 52) {
-                // 向零截断小数部分
                 a3 = significand >>> (52 - e);
             } else {
                 int shift = e - 52;
 
-                // 超过 256-bit 的部分直接丢弃
+                // shift 达到 256 时所有有效位均已越界；否则仅保留落在四个 long 内的位。
                 if (shift < 256) {
                     int n = shift & 63;
                     long low = significand << n;
@@ -83,7 +77,7 @@ public final class Int256 implements Int<Int256> {
                 }
             }
 
-            // 对负数进行 256-bit two's complement 取负
+            // 保留低 256 位后取补码与先取负再截断等价，低组全零时才向高组传递加一进位。
             if (negative) {
                 long b3 = a3, b2 = a2, b1 = a1;
 
@@ -97,23 +91,63 @@ public final class Int256 implements Int<Int256> {
         this(a0, a1, a2, a3);
     }
 
+    /**
+     * 数值为 {@code 2^255-1} 的常量。
+     *
+     * @see Int#MAX_VALUE
+     */
     public static final Int256 MAX_VALUE = new Int256(
             Long.MAX_VALUE, -1L, -1L, -1L);
 
+    /**
+     * 数值为 {@code -2^255} 的常量。
+     *
+     * @see Int#MIN_VALUE
+     */
     public static final Int256 MIN_VALUE = new Int256(
             Long.MIN_VALUE, 0L, 0L, 0L);
 
+    /**
+     * 256-bit 的零值常量。
+     *
+     * @see Int#ZERO
+     */
     public static final Int256 ZERO = new Int256(0L);
+    /**
+     * 256-bit 的一值常量。
+     *
+     * @see Int#ONE
+     */
     public static final Int256 ONE = new Int256(1L);
 
+    /**
+     * 将有符号 long 的数值扩展为 256-bit 整数。
+     *
+     * @see Int#of(long)
+     */
     public static Int256 of(long last) {
         return new Int256(last);
     }
 
+    /**
+     * 按大端序拼接四个 long 的原始位模式，各参数的 long 符号不改变其位权。
+     *
+     * @param l0 最高 64 位，包含符号位
+     * @param l1 bit 128 至 bit 191
+     * @param l2 bit 64 至 bit 127
+     * @param l3 最低 64 位
+     */
     public static Int256 of(long l0, long l1, long l2, long l3) {
         return new Int256(l0, l1, l2, l3);
     }
 
+    /**
+     * 按大端序从恰好四个 long 的原始位模式构造整数。
+     *
+     * @throws NullPointerException 数组为 {@code null}
+     * @throws IllegalArgumentException 数组长度不等于 4
+     * @see Int#of(long[])
+     */
     public static Int256 of(long[] longs) {
         if (longs.length != 4) {
             throw new IllegalArgumentException("parameter 'longs' must contain exactly 4 elements");
@@ -121,11 +155,13 @@ public final class Int256 implements Int<Int256> {
         return new Int256(longs[0], longs[1], longs[2], longs[3]);
     }
 
+    /**
+     * 按 {@link Int#of(double)} 的转换规则构造 256-bit 整数。
+     */
     public static Int256 of(double value) {
         return new Int256(value);
     }
 
-    /** 转换为 double，按照 IEEE 754 最近偶数规则舍入。 */
     @Override
     public double toDouble() {
         boolean negative = l0 < 0L;
@@ -135,7 +171,7 @@ public final class Int256 implements Int<Int256> {
         long a2 = l2;
         long a3 = l3;
 
-        // 计算无符号绝对值
+        // 最小值的正绝对值无法用有符号 256-bit 表示，因此四组按无符号位模式保存绝对值。
         if (negative) {
             a3 = -l3;
             a2 = ~l2 + (l3 == 0L ? 1L : 0L);
@@ -147,6 +183,7 @@ public final class Int256 implements Int<Int256> {
             return 0.0;
         }
 
+        // top 是最高非零组，next 补充其后的有效位，rest 汇总更低组以判断舍入余量是否非零。
         long top;
         long next;
         long rest;
@@ -174,7 +211,7 @@ public final class Int256 implements Int<Int256> {
             offset = 0;
         }
 
-        // 将最高有效 bit 对齐至 bit 63
+        // 将最高有效 bit 对齐至 bit 63，使 53 位保留值与后续舍入位的位置固定。
         int leading = Long.numberOfLeadingZeros(top);
         long normalized = top << leading;
 
@@ -182,15 +219,15 @@ public final class Int256 implements Int<Int256> {
             normalized |= next >>> (64 - leading);
         }
 
-        // 提取 53-bit 有效数字
         long significand = normalized >>> 11;
 
-        // 最近偶数舍入
+        // guard 是第一位舍弃位，sticky 表示其后的舍弃位是否存在一，包括未并入 normalized 的低位。
         boolean guard = (normalized & (1L << 10)) != 0L;
         boolean sticky = (normalized & 0x3ffL) != 0L
                 || (next << leading) != 0L
                 || rest != 0L;
 
+        // 大于半单位时进位；恰好半单位时只对奇数进位，使保留结果为偶数。
         if (guard && (sticky || (significand & 1L) != 0L)) {
             significand++;
         }
@@ -201,7 +238,6 @@ public final class Int256 implements Int<Int256> {
         return negative ? -result : result;
     }
 
-    /** 返回有符号十进制字符串。 */
     @Override
     public String toString() {
         if (isZero()) {
@@ -211,7 +247,7 @@ public final class Int256 implements Int<Int256> {
         boolean negative = l0 < 0L;
         long a0 = l0, a1 = l1, a2 = l2, a3 = l3;
 
-        // 将负数转换为无符号绝对值
+        // 按无符号位模式保存绝对值，保证最小值也能继续执行十进制分解。
         if (negative) {
             a3 = -l3;
             a2 = ~l2 + (l3 == 0L ? 1L : 0L);
@@ -220,13 +256,14 @@ public final class Int256 implements Int<Int256> {
         }
 
         final long base = 1_000_000_000L;
+        // 绝对值最多 77 位，按每组九位输出最多写入 81 位，再预留一位负号。
         char[] chars = new char[82];
         int pos = chars.length;
 
         do {
             long rem = 0L;
 
-            // l0
+            // rem 小于十亿，拼接下一段 32 位后仍小于 2^63，可安全使用有符号 long 除法。
             long x = (rem << 32) | (a0 >>> 32);
             long q = x / base;
             rem = x % base;
@@ -237,7 +274,6 @@ public final class Int256 implements Int<Int256> {
             rem = x % base;
             a0 = high | q;
 
-            // l1
             x = (rem << 32) | (a1 >>> 32);
             q = x / base;
             rem = x % base;
@@ -248,7 +284,6 @@ public final class Int256 implements Int<Int256> {
             rem = x % base;
             a1 = high | q;
 
-            // l2
             x = (rem << 32) | (a2 >>> 32);
             q = x / base;
             rem = x % base;
@@ -259,7 +294,6 @@ public final class Int256 implements Int<Int256> {
             rem = x % base;
             a2 = high | q;
 
-            // l3
             x = (rem << 32) | (a3 >>> 32);
             q = x / base;
             rem = x % base;
@@ -270,14 +304,13 @@ public final class Int256 implements Int<Int256> {
             rem = x % base;
             a3 = high | q;
 
-            // 输出 9 位十进制数字
+            // 每个余数固定输出九位，保留各十亿分组之间的零，仅在全部输出后去除最高组前导零。
             for (int i = 0; i < 9; i++) {
                 chars[--pos] = (char) ('0' + rem % 10);
                 rem /= 10;
             }
         } while ((a0 | a1 | a2 | a3) != 0L);
 
-        // 去除前导零并补充符号
         while (chars[pos] == '0') {
             pos++;
         }
@@ -288,7 +321,11 @@ public final class Int256 implements Int<Int256> {
         return new String(chars, pos, chars.length - pos);
     }
 
-    /** 解析有符号十进制字符串，超出 256-bit 时回绕。 */
+    /**
+     * 按十进制数值解析为 256-bit 整数，超出范围时回绕。
+     *
+     * @see Int#parseInt(String)
+     */
     public static Int256 parseInt(String value) {
         if (value == null || value.isEmpty()) {
             throw new NumberFormatException("Empty decimal value");
@@ -317,31 +354,29 @@ public final class Int256 implements Int<Int256> {
                         "Invalid decimal value: " + value);
             }
 
-            // a3
+            // 按 32 位分段乘十并加上新数字，各段中间结果小于 2^36，进位从最低组向最高组传递。
             long p = (a3 & 0xffffffffL) * 10L + digit;
             long q = (a3 >>> 32) * 10L + (p >>> 32);
             a3 = (q << 32) | (p & 0xffffffffL);
             long carry = q >>> 32;
 
-            // a2
             p = (a2 & 0xffffffffL) * 10L + carry;
             q = (a2 >>> 32) * 10L + (p >>> 32);
             a2 = (q << 32) | (p & 0xffffffffL);
             carry = q >>> 32;
 
-            // a1
             p = (a1 & 0xffffffffL) * 10L + carry;
             q = (a1 >>> 32) * 10L + (p >>> 32);
             a1 = (q << 32) | (p & 0xffffffffL);
             carry = q >>> 32;
 
-            // a0，超出 256-bit 的进位直接丢弃
+            // 最高组不再传递进位，保留低 256 位即可实现回绕。
             p = (a0 & 0xffffffffL) * 10L + carry;
             q = (a0 >>> 32) * 10L + (p >>> 32);
             a0 = (q << 32) | (p & 0xffffffffL);
         }
 
-        // 对负数进行 256-bit two's complement 取负
+        // 先累积数值的低 256 位再取补码，与对完整负数保留低 256 位等价。
         if (negative) {
             long b3 = a3, b2 = a2, b1 = a1;
 
@@ -361,9 +396,9 @@ public final class Int256 implements Int<Int256> {
     }
 
     /**
-     * 必须带有 0x 前缀，必须使用小写字母。
-     * 位数不足时补齐前导零，位数溢出时截断高位。
-     * 按原始位模式解释。位全空时不合法。
+     * 将十六进制原始位模式解析为 256-bit 整数。
+     *
+     * @see Int#parseHexInt(String)
      */
     public static Int256 parseHexInt(String value) {
         if (!value.startsWith("0x")) {
@@ -451,10 +486,6 @@ public final class Int256 implements Int<Int256> {
                 l3 ^ other.l3);
     }
 
-    /**
-     * bits 为正时左移，为负时算术右移。
-     * 超出 256-bit 范围的位被丢弃，右移时进行符号扩展。
-     */
     @Override
     public Int256 shift(int bits) {
         if (bits == 0) {
@@ -463,6 +494,7 @@ public final class Int256 implements Int<Int256> {
         if (bits >= 256) {
             return new Int256(0L);
         }
+        // 在取负计算右移距离前处理超大距离，避免 Integer.MIN_VALUE 取负溢出。
         if (bits <= -256) {
             return new Int256(l0 >> 63);
         }
@@ -491,6 +523,7 @@ public final class Int256 implements Int<Int256> {
                 }
             }
 
+            // 整组搬移后再处理组内位移，跳过零距离，避免 Java 将移位 64 位解释为移位零位。
             int n = bits & 63;
             if (n != 0) {
                 return new Int256(
@@ -539,6 +572,7 @@ public final class Int256 implements Int<Int256> {
         long r3 = l3 + other.l3;
         long carry = Long.compareUnsigned(r3, l3) < 0 ? 1L : 0L;
 
+        // 结果比原组小表示无符号溢出；带入进位且结果相等时，另一组为全一，同样产生进位。
         long r2 = l2 + other.l2 + carry;
         carry = Long.compareUnsigned(r2, l2) < 0
                 || (carry != 0 && r2 == l2) ? 1L : 0L;
@@ -557,6 +591,7 @@ public final class Int256 implements Int<Int256> {
         long r3 = l3 - other.l3;
         long borrow = Long.compareUnsigned(l3, other.l3) < 0 ? 1L : 0L;
 
+        // 原组较小时产生借位；两组相等但带入借位时也必须继续向高组借位。
         long r2 = l2 - other.l2 - borrow;
         borrow = Long.compareUnsigned(l2, other.l2) < 0
                 || (borrow != 0 && l2 == other.l2) ? 1L : 0L;
@@ -582,9 +617,10 @@ public final class Int256 implements Int<Int256> {
 
     @Override
     public Int256 multiply(Int256 other) {
+        // 补码乘法保留低 256 位时可按无符号分组累加部分积，无须另行处理操作数符号。
         long r3 = l3 * other.l3;
 
-        // 第二个 64-bit
+        // 每组汇总落在该位置的部分积，每次无符号加法溢出都向下一组贡献一，carry 可大于一。
         long r2 = Math.unsignedMultiplyHigh(l3, other.l3);
         long carry = 0L;
         long v = l3 * other.l2;
@@ -599,7 +635,6 @@ public final class Int256 implements Int<Int256> {
             carry++;
         r2 = t;
 
-        // 第三个 64-bit
         long r1 = carry;
         carry = 0L;
 
@@ -633,7 +668,7 @@ public final class Int256 implements Int<Int256> {
             carry++;
         r1 = t;
 
-        // 最高 64-bit，最终进位直接丢弃
+        // 仅累加会影响最高保留组的部分积，更高部分积与最终进位均位于低 256 位之外。
         long r0 = carry
                 + Math.unsignedMultiplyHigh(l3, other.l1)
                 + Math.unsignedMultiplyHigh(l2, other.l2)
@@ -648,6 +683,7 @@ public final class Int256 implements Int<Int256> {
 
     @Override
     public int compareTo(Int256 other) {
+        // 最高组决定符号，其余组仅表示非负位权，须按无符号顺序逐组比较。
         int cmp = Long.compare(l0, other.l0);
         if (cmp != 0)
             return cmp;
@@ -691,9 +727,6 @@ public final class Int256 implements Int<Int256> {
         };
     }
 
-    /**
-     * bit 0 为最低有效位，bit 255 为符号位。
-     */
     @Override
     public boolean testBit(int index) {
         if (index < 0 || index >= 256) {
@@ -710,7 +743,6 @@ public final class Int256 implements Int<Int256> {
         return (word & (1L << (index & 63))) != 0L;
     }
 
-    /** 返回去除冗余符号扩展位后的有效位数，不计符号位。 */
     @Override
     public int bitLength() {
         boolean negative = l0 < 0L;
@@ -729,7 +761,6 @@ public final class Int256 implements Int<Int256> {
         return 64 - Long.numberOfLeadingZeros(a3);
     }
 
-    /** 返回完整 256-bit 位模式中值为 1 的 bit 数量。 */
     @Override
     public int bitCount() {
         return Long.bitCount(l0)
