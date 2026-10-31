@@ -13,7 +13,7 @@ public class Int256Base2Test {
     @Test
     void testBitLength() {
         // 零及基本正负数
-        assertEquals(0, Int256.ZERO().bitLength());
+        assertEquals(0, Int256.ZERO.bitLength());
         assertEquals(1, Int256.of(1L).bitLength());
         assertEquals(2, Int256.of(2L).bitLength());
         assertEquals(2, Int256.of(3L).bitLength());
@@ -42,17 +42,17 @@ public class Int256Base2Test {
                 Int256.of(-1L, -1L, -2L, 0L).bitLength());
 
         // 256-bit 极值
-        assertEquals(255, Int256.MAX_VALUE().bitLength());
-        assertEquals(255, Int256.MIN_VALUE().bitLength());
+        assertEquals(255, Int256.MAX_VALUE.bitLength());
+        assertEquals(255, Int256.MIN_VALUE.bitLength());
     }
 
     @Test
     void testBitCount() {
         // 全零、全一与极值
-        assertEquals(0, Int256.ZERO().bitCount());
+        assertEquals(0, Int256.ZERO.bitCount());
         assertEquals(256, Int256.of(-1L).bitCount());
-        assertEquals(1, Int256.MIN_VALUE().bitCount());
-        assertEquals(255, Int256.MAX_VALUE().bitCount());
+        assertEquals(1, Int256.MIN_VALUE.bitCount());
+        assertEquals(255, Int256.MAX_VALUE.bitCount());
 
         // 单 bit
         assertEquals(1, Int256.of(1L).bitCount());
@@ -79,7 +79,7 @@ public class Int256Base2Test {
     @Test
     void testToDouble() {
         // 基本精确转换
-        assertEquals(0.0, Int256.ZERO().toDouble());
+        assertEquals(0.0, Int256.ZERO.toDouble());
         assertEquals(1.0, Int256.of(1L).toDouble());
         assertEquals(-1.0, Int256.of(-1L).toDouble());
         assertEquals(123456789.0,
@@ -121,10 +121,10 @@ public class Int256Base2Test {
 
         // 256-bit 极值
         assertEquals(0x1.0p255,
-                Int256.MAX_VALUE().toDouble());
+                Int256.MAX_VALUE.toDouble());
 
         assertEquals(-0x1.0p255,
-                Int256.MIN_VALUE().toDouble());
+                Int256.MIN_VALUE.toDouble());
 
         // 随机 256-bit 整数与标准高精度转换对比
         Random random = new Random(0x256D0B1EL);

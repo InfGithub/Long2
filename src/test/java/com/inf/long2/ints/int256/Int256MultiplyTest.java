@@ -84,18 +84,18 @@ public class Int256MultiplyTest {
         // 完整 256-bit 溢出回绕
         assertEquals(
                 Int256.of(-2L),
-                Int256.MAX_VALUE().multiply(two));
+                Int256.MAX_VALUE.multiply(two));
 
         assertEquals(zero,
-                Int256.MIN_VALUE().multiply(two));
+                Int256.MIN_VALUE.multiply(two));
 
-        assertEquals(Int256.MIN_VALUE(),
-                Int256.MIN_VALUE().multiply(negativeOne));
+        assertEquals(Int256.MIN_VALUE,
+                Int256.MIN_VALUE.multiply(negativeOne));
 
         assertEquals(zero,
-                Int256.MIN_VALUE().multiply(Int256.MIN_VALUE()));
+                Int256.MIN_VALUE.multiply(Int256.MIN_VALUE));
 
         assertEquals(one,
-                Int256.MAX_VALUE().multiply(Int256.MAX_VALUE()));
+                Int256.MAX_VALUE.multiply(Int256.MAX_VALUE));
     }
 }

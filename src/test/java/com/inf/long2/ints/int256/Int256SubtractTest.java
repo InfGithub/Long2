@@ -76,17 +76,17 @@ public class Int256SubtractTest {
                 Int256.of(1L, 0L, 0L, 0L).subtract(one));
 
         // 完整 256-bit 溢出回绕
-        assertEquals(Int256.MAX_VALUE(),
-                Int256.MIN_VALUE().subtract(one));
+        assertEquals(Int256.MAX_VALUE,
+                Int256.MIN_VALUE.subtract(one));
 
-        assertEquals(Int256.MIN_VALUE(),
-                Int256.MAX_VALUE().subtract(negativeOne));
+        assertEquals(Int256.MIN_VALUE,
+                Int256.MAX_VALUE.subtract(negativeOne));
 
         assertEquals(zero,
-                Int256.MIN_VALUE().subtract(Int256.MIN_VALUE()));
+                Int256.MIN_VALUE.subtract(Int256.MIN_VALUE));
 
         assertEquals(negativeOne,
-                Int256.MAX_VALUE().subtract(Int256.MIN_VALUE()));
+                Int256.MAX_VALUE.subtract(Int256.MIN_VALUE));
     }
 
 }

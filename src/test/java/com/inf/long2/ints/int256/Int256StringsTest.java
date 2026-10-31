@@ -14,7 +14,7 @@ public class Int256StringsTest {
     @Test
     void testToString() {
         // 基本数值
-        assertEquals("0", Int256.ZERO().toString());
+        assertEquals("0", Int256.ZERO.toString());
         assertEquals("1", Int256.of(1L).toString());
         assertEquals("-1", Int256.of(-1L).toString());
         assertEquals("1119", Int256.of(1119L).toString());
@@ -41,26 +41,26 @@ public class Int256StringsTest {
         // 256-bit 极值
         assertEquals(
                 "57896044618658097711785492504343953926634992332820282019728792003956564819967",
-                Int256.MAX_VALUE().toString());
+                Int256.MAX_VALUE.toString());
 
         assertEquals(
                 "-57896044618658097711785492504343953926634992332820282019728792003956564819968",
-                Int256.MIN_VALUE().toString());
+                Int256.MIN_VALUE.toString());
     }
 
     @Test
     void testParseInt256() {
         // 基本数值
-        assertEquals(Int256.ZERO(), Int256.parseInt("0"));
+        assertEquals(Int256.ZERO, Int256.parseInt("0"));
         assertEquals(Int256.of(1L), Int256.parseInt("1"));
         assertEquals(Int256.of(-1L), Int256.parseInt("-1"));
         assertEquals(Int256.of(1119L), Int256.parseInt("1119"));
         assertEquals(Int256.of(-1119L), Int256.parseInt("-1119"));
 
         // 符号与前导零
-        assertEquals(Int256.ZERO(), Int256.parseInt("+0"));
-        assertEquals(Int256.ZERO(), Int256.parseInt("-0"));
-        assertEquals(Int256.ZERO(), Int256.parseInt("000000"));
+        assertEquals(Int256.ZERO, Int256.parseInt("+0"));
+        assertEquals(Int256.ZERO, Int256.parseInt("-0"));
+        assertEquals(Int256.ZERO, Int256.parseInt("000000"));
         assertEquals(Int256.of(1119L),
                 Int256.parseInt("+0001119"));
         assertEquals(Int256.of(-1119L),
@@ -80,12 +80,12 @@ public class Int256StringsTest {
 
         // 256-bit 极值
         assertEquals(
-                Int256.MAX_VALUE(),
+                Int256.MAX_VALUE,
                 Int256.parseInt(
                         "57896044618658097711785492504343953926634992332820282019728792003956564819967"));
 
         assertEquals(
-                Int256.MIN_VALUE(),
+                Int256.MIN_VALUE,
                 Int256.parseInt(
                         "-57896044618658097711785492504343953926634992332820282019728792003956564819968"));
     }
@@ -98,20 +98,20 @@ public class Int256StringsTest {
 
         // 有符号 256-bit 边界
         assertEquals(
-                Int256.MAX_VALUE(),
+                Int256.MAX_VALUE,
                 Int256.parseInt(pow255.subtract(one).toString()));
 
         assertEquals(
-                Int256.MIN_VALUE(),
+                Int256.MIN_VALUE,
                 Int256.parseInt(pow255.negate().toString()));
 
         // 正向溢出
         assertEquals(
-                Int256.MIN_VALUE(),
+                Int256.MIN_VALUE,
                 Int256.parseInt(pow255.toString()));
 
         assertEquals(
-                Int256.ZERO(),
+                Int256.ZERO,
                 Int256.parseInt(pow256.toString()));
 
         assertEquals(
@@ -120,12 +120,12 @@ public class Int256StringsTest {
 
         // 负向溢出
         assertEquals(
-                Int256.MAX_VALUE(),
+                Int256.MAX_VALUE,
                 Int256.parseInt(
                         pow255.negate().subtract(one).toString()));
 
         assertEquals(
-                Int256.ZERO(),
+                Int256.ZERO,
                 Int256.parseInt(pow256.negate().toString()));
 
         assertEquals(

@@ -15,8 +15,8 @@ public class Int256Base3Test {
     @Test
     void testDoubleBasic() {
         // 零与基本整数
-        assertEquals(Int256.ZERO(), Int256.of(0.0));
-        assertEquals(Int256.ZERO(), Int256.of(-0.0));
+        assertEquals(Int256.ZERO, Int256.of(0.0));
+        assertEquals(Int256.ZERO, Int256.of(-0.0));
         assertEquals(Int256.of(1L), Int256.of(1.0));
         assertEquals(Int256.of(-1L), Int256.of(-1.0));
         assertEquals(Int256.of(1119L), Int256.of(1119.0));
@@ -29,45 +29,45 @@ public class Int256Base3Test {
         assertEquals(Int256.of(-12L), Int256.of(-12.999));
 
         // 绝对值小于 1
-        assertEquals(Int256.ZERO(), Int256.of(0.999));
-        assertEquals(Int256.ZERO(), Int256.of(-0.999));
-        assertEquals(Int256.ZERO(), Int256.of(0.5));
-        assertEquals(Int256.ZERO(), Int256.of(-0.5));
+        assertEquals(Int256.ZERO, Int256.of(0.999));
+        assertEquals(Int256.ZERO, Int256.of(-0.999));
+        assertEquals(Int256.ZERO, Int256.of(0.5));
+        assertEquals(Int256.ZERO, Int256.of(-0.5));
 
         // subnormal 和极小有限值
-        assertEquals(Int256.ZERO(), Int256.of(Double.MIN_VALUE));
-        assertEquals(Int256.ZERO(), Int256.of(-Double.MIN_VALUE));
-        assertEquals(Int256.ZERO(), Int256.of(Double.MIN_NORMAL));
-        assertEquals(Int256.ZERO(), Int256.of(-Double.MIN_NORMAL));
+        assertEquals(Int256.ZERO, Int256.of(Double.MIN_VALUE));
+        assertEquals(Int256.ZERO, Int256.of(-Double.MIN_VALUE));
+        assertEquals(Int256.ZERO, Int256.of(Double.MIN_NORMAL));
+        assertEquals(Int256.ZERO, Int256.of(-Double.MIN_NORMAL));
     }
 
     @Test
     void testDoubleSpecialValues() {
         // NaN -> ZERO
-        assertEquals(Int256.ZERO(), Int256.of(Double.NaN));
+        assertEquals(Int256.ZERO, Int256.of(Double.NaN));
 
         // 正负 NaN 及不同 payload
-        assertEquals(Int256.ZERO(), Int256.of(
+        assertEquals(Int256.ZERO, Int256.of(
                 Double.longBitsToDouble(0x7ff0000000000001L)));
 
-        assertEquals(Int256.ZERO(), Int256.of(
+        assertEquals(Int256.ZERO, Int256.of(
                 Double.longBitsToDouble(0x7ff8000000000001L)));
 
-        assertEquals(Int256.ZERO(), Int256.of(
+        assertEquals(Int256.ZERO, Int256.of(
                 Double.longBitsToDouble(0xfff8000000000001L)));
 
         // Infinity -> 对应极值
-        assertEquals(Int256.MAX_VALUE(),
+        assertEquals(Int256.MAX_VALUE,
                 Int256.of(Double.POSITIVE_INFINITY));
 
-        assertEquals(Int256.MIN_VALUE(),
+        assertEquals(Int256.MIN_VALUE,
                 Int256.of(Double.NEGATIVE_INFINITY));
 
         // 最大有限 double：按 256-bit 回绕
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(Double.MAX_VALUE));
 
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(-Double.MAX_VALUE));
     }
 
@@ -75,7 +75,7 @@ public class Int256Base3Test {
     void testDoublePrecision() {
         // 1.0 附近的小数截断
         assertEquals(
-                Int256.ZERO(),
+                Int256.ZERO,
                 Int256.of(Math.nextDown(1.0)));
 
         assertEquals(
@@ -83,7 +83,7 @@ public class Int256Base3Test {
                 Int256.of(Math.nextUp(1.0)));
 
         assertEquals(
-                Int256.ZERO(),
+                Int256.ZERO,
                 Int256.of(Math.nextUp(-1.0)));
 
         assertEquals(
@@ -145,17 +145,17 @@ public class Int256Base3Test {
         double pow256 = Math.scalb(1.0, 256);
 
         // 有符号 256-bit 边界
-        assertEquals(Int256.MIN_VALUE(),
+        assertEquals(Int256.MIN_VALUE,
                 Int256.of(pow255));
 
-        assertEquals(Int256.MIN_VALUE(),
+        assertEquals(Int256.MIN_VALUE,
                 Int256.of(-pow255));
 
         // 2^256 回绕为零
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(pow256));
 
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(-pow256));
 
         // 2^256 之上最近的 double
@@ -176,13 +176,13 @@ public class Int256Base3Test {
                 Int256.of(-Math.nextUp(pow256)));
 
         // 更大的 2 的整数次幂
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(Math.scalb(1.0, 307)));
 
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(Math.scalb(1.0, 308)));
 
-        assertEquals(Int256.ZERO(),
+        assertEquals(Int256.ZERO,
                 Int256.of(-Math.scalb(1.0, 308)));
     }
 
@@ -222,15 +222,15 @@ public class Int256Base3Test {
     // 独立参考：精确取得 double 的整数部分并保留低 256 bit
     private static Int256 referenceDouble(double value) {
         if (Double.isNaN(value)) {
-            return Int256.ZERO();
+            return Int256.ZERO;
         }
 
         if (value == Double.POSITIVE_INFINITY) {
-            return Int256.MAX_VALUE();
+            return Int256.MAX_VALUE;
         }
 
         if (value == Double.NEGATIVE_INFINITY) {
-            return Int256.MIN_VALUE();
+            return Int256.MIN_VALUE;
         }
 
         BigInteger integer = new BigDecimal(value).toBigInteger();

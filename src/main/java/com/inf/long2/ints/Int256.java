@@ -97,30 +97,14 @@ public final class Int256 implements Int<Int256> {
         this(a0, a1, a2, a3);
     }
 
-    private static final Int256 MAX_VALUE = new Int256(
+    public static final Int256 MAX_VALUE = new Int256(
             Long.MAX_VALUE, -1L, -1L, -1L);
 
-    private static final Int256 MIN_VALUE = new Int256(
+    public static final Int256 MIN_VALUE = new Int256(
             Long.MIN_VALUE, 0L, 0L, 0L);
 
-    private static final Int256 ZERO = new Int256(0L);
-    private static final Int256 ONE = new Int256(1L);
-
-    public static Int256 MAX_VALUE() {
-        return MAX_VALUE;
-    }
-
-    public static Int256 MIN_VALUE() {
-        return MIN_VALUE;
-    }
-
-    public static Int256 ZERO() {
-        return ZERO;
-    }
-
-    public static Int256 ONE() {
-        return ONE;
-    }
+    public static final Int256 ZERO = new Int256(0L);
+    public static final Int256 ONE = new Int256(1L);
 
     public static Int256 of(long last) {
         return new Int256(last);

@@ -76,16 +76,16 @@ public class Int256AddTest {
                 Int256.of(0L, -1L, -1L, -1L).add(one));
 
         // 完整 256-bit 溢出回绕
-        assertEquals(Int256.MIN_VALUE(),
-                Int256.MAX_VALUE().add(one));
+        assertEquals(Int256.MIN_VALUE,
+                Int256.MAX_VALUE.add(one));
 
-        assertEquals(Int256.MAX_VALUE(),
-                Int256.MIN_VALUE().add(negativeOne));
+        assertEquals(Int256.MAX_VALUE,
+                Int256.MIN_VALUE.add(negativeOne));
 
         assertEquals(zero,
-                Int256.MIN_VALUE().add(Int256.MIN_VALUE()));
+                Int256.MIN_VALUE.add(Int256.MIN_VALUE));
 
         assertEquals(Int256.of(-2L),
-                Int256.MAX_VALUE().add(Int256.MAX_VALUE()));
+                Int256.MAX_VALUE.add(Int256.MAX_VALUE));
     }
 }

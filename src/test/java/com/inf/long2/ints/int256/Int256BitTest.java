@@ -38,12 +38,12 @@ public class Int256BitTest {
         // 右移超出位宽
         assertEquals(
                 Int256.of(-1L),
-                Int256.MIN_VALUE().shift(-256));
+                Int256.MIN_VALUE.shift(-256));
 
         // int 最小值不会导致取负溢出
         assertEquals(
                 Int256.of(-1L),
-                Int256.MIN_VALUE().shift(Integer.MIN_VALUE));
+                Int256.MIN_VALUE.shift(Integer.MIN_VALUE));
 
         // 不移位
         assertEquals(value, value.shift(0));

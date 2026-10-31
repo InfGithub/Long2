@@ -93,11 +93,11 @@ public class Int256BaseTest {
     void testMinMaxValue() {
         assertEquals(
                 "0x7fffffffffffffff" + "ffffffffffffffff".repeat(3),
-                Int256.MAX_VALUE().toHexString());
+                Int256.MAX_VALUE.toHexString());
 
         assertEquals(
                 "0x8000000000000000" + "0000000000000000".repeat(3),
-                Int256.MIN_VALUE().toHexString());
+                Int256.MIN_VALUE.toHexString());
     }
 
     @Test
@@ -111,14 +111,14 @@ public class Int256BaseTest {
                 Int256.parseHexInt("0x0"));
 
         assertEquals(
-                Int256.MAX_VALUE(),
+                Int256.MAX_VALUE,
                 Int256.parseHexInt(
-                        Int256.MAX_VALUE().toHexString()));
+                        Int256.MAX_VALUE.toHexString()));
 
         assertEquals(
-                Int256.MIN_VALUE(),
+                Int256.MIN_VALUE,
                 Int256.parseHexInt(
-                        Int256.MIN_VALUE().toHexString()));
+                        Int256.MIN_VALUE.toHexString()));
 
         // 超过 64 位，截断高位
         assertEquals(

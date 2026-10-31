@@ -31,11 +31,11 @@ public class Int256NegateTest {
         assertEquals(zero, value.add(value.negate()));
 
         // 256-bit 边界回绕
-        assertEquals(Int256.MIN_VALUE(),
-                Int256.MIN_VALUE().negate());
+        assertEquals(Int256.MIN_VALUE,
+                Int256.MIN_VALUE.negate());
 
         assertEquals(
-                Int256.MIN_VALUE().add(one),
-                Int256.MAX_VALUE().negate());
+                Int256.MIN_VALUE.add(one),
+                Int256.MAX_VALUE.negate());
     }
 }

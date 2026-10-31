@@ -19,7 +19,7 @@ public class Int256Base1Test {
         // 相等
         assertEquals(0, zero.compareTo(Int256.of(0L)));
         assertEquals(0, one.compareTo(Int256.of(1L)));
-        assertEquals(0, Int256.MAX_VALUE().compareTo(Int256.MAX_VALUE()));
+        assertEquals(0, Int256.MAX_VALUE.compareTo(Int256.MAX_VALUE));
 
         // 基本有符号比较
         assertTrue(negativeOne.compareTo(zero) < 0);
@@ -27,8 +27,8 @@ public class Int256Base1Test {
         assertTrue(one.compareTo(negativeOne) > 0);
 
         // 256-bit 极值
-        assertTrue(Int256.MIN_VALUE().compareTo(Int256.MAX_VALUE()) < 0);
-        assertTrue(Int256.MAX_VALUE().compareTo(Int256.MIN_VALUE()) > 0);
+        assertTrue(Int256.MIN_VALUE.compareTo(Int256.MAX_VALUE) < 0);
+        assertTrue(Int256.MAX_VALUE.compareTo(Int256.MIN_VALUE) > 0);
 
         // 最高字段按有符号比较
         assertTrue(
@@ -56,13 +56,13 @@ public class Int256Base1Test {
 
     @Test
     void testSignum() {
-        assertEquals(0, Int256.ZERO().signum());
+        assertEquals(0, Int256.ZERO.signum());
         assertEquals(1, Int256.of(1L).signum());
         assertEquals(-1, Int256.of(-1L).signum());
 
         // 256-bit 极值
-        assertEquals(1, Int256.MAX_VALUE().signum());
-        assertEquals(-1, Int256.MIN_VALUE().signum());
+        assertEquals(1, Int256.MAX_VALUE.signum());
+        assertEquals(-1, Int256.MIN_VALUE.signum());
 
         // 非零值位于不同字段
         assertEquals(1,
@@ -80,7 +80,7 @@ public class Int256Base1Test {
 
     @Test
     void testIsZero() {
-        assertTrue(Int256.ZERO().isZero());
+        assertTrue(Int256.ZERO.isZero());
         assertTrue(Int256.of(0L, 0L, 0L, 0L).isZero());
 
         // 任意字段非零，整个整数都不是零
@@ -91,19 +91,19 @@ public class Int256Base1Test {
 
         // 负数及极值
         assertFalse(Int256.of(-1L).isZero());
-        assertFalse(Int256.MIN_VALUE().isZero());
-        assertFalse(Int256.MAX_VALUE().isZero());
+        assertFalse(Int256.MIN_VALUE.isZero());
+        assertFalse(Int256.MAX_VALUE.isZero());
     }
 
     @Test
     void testIsNegative() {
-        assertFalse(Int256.ZERO().isNegative());
+        assertFalse(Int256.ZERO.isNegative());
         assertFalse(Int256.of(1L).isNegative());
         assertTrue(Int256.of(-1L).isNegative());
 
         // 256-bit 极值
-        assertFalse(Int256.MAX_VALUE().isNegative());
-        assertTrue(Int256.MIN_VALUE().isNegative());
+        assertFalse(Int256.MAX_VALUE.isNegative());
+        assertTrue(Int256.MIN_VALUE.isNegative());
 
         // 只有最高 bit 决定符号
         assertFalse(
@@ -151,13 +151,13 @@ public class Int256Base1Test {
 
         // 全零和全一
         for (int i = 0; i < 256; i++) {
-            assertFalse(Int256.ZERO().testBit(i));
+            assertFalse(Int256.ZERO.testBit(i));
             assertTrue(Int256.of(-1L).testBit(i));
         }
 
         // 符号位
-        assertFalse(Int256.MAX_VALUE().testBit(255));
-        assertTrue(Int256.MIN_VALUE().testBit(255));
+        assertFalse(Int256.MAX_VALUE.testBit(255));
+        assertTrue(Int256.MIN_VALUE.testBit(255));
 
         // 非法索引
         assertThrows(IndexOutOfBoundsException.class,

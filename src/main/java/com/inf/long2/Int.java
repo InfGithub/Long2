@@ -2,6 +2,7 @@
 package com.inf.long2;
 
 import com.inf.long2.util.annotations.HaveToImplements;
+import com.inf.long2.util.annotations.StaticFieldImplementsCheck;
 import com.inf.long2.util.annotations.StaticMethodImplementsCheck;
 
 /**
@@ -12,21 +13,17 @@ import com.inf.long2.util.annotations.StaticMethodImplementsCheck;
 @StaticMethodImplementsCheck
 public interface Int<T extends Int<T>> extends Comparable<T> {
 
-    public static Int<?> MAX_VALUE() {
-        return null;
-    };
+    @StaticFieldImplementsCheck
+    public static final Int<?> MAX_VALUE = null;
 
-    public static Int<?> MIN_VALUE() {
-        return null;
-    };
+    @StaticFieldImplementsCheck
+    public static final Int<?> MIN_VALUE = null;
 
-    public static Int<?> ZERO() {
-        return null;
-    };
+    @StaticFieldImplementsCheck
+    public static final Int<?> ZERO = null;
 
-    public static Int<?> ONE() {
-        return null;
-    };
+    @StaticFieldImplementsCheck
+    public static final Int<?> ONE = null;
 
     // 从 index = -1 的 long 构造整型。
     public static Int<?> of(long last) {
