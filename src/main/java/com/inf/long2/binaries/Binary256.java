@@ -697,6 +697,27 @@ public final class Binary256 implements Binary<Binary256> {
         return result;
     }
 
+    /** 正常幅值已按最少容量打包，组数为 1 至 4 且最低组非零，无需扫描低零组。 */
+    private static long[] multiplyNormalMagnitude(long a0, long a1, long a2, long a3, int alength,
+            long b0, long b1, long b2, long b3, int blength) {
+        long[] result = new long[alength + blength];
+        for (int i = 0; i < alength; i++) {
+            long av = fourWord(a0, a1, a2, a3, i), carry = 0;
+            for (int j = 0; j < blength; j++) {
+                long bv = fourWord(b0, b1, b2, b3, j);
+                long low = av * bv, high = Math.unsignedMultiplyHigh(av, bv);
+                long sum = low + result[i + j];
+                high += Long.compareUnsigned(sum, low) < 0 ? 1 : 0;
+                long next = sum + carry;
+                high += Long.compareUnsigned(next, sum) < 0 ? 1 : 0;
+                result[i + j] = next;
+                carry = high;
+            }
+            result[i + blength] = carry;
+        }
+        return result;
+    }
+
     /** 幅值非零；只有右移能减少 long 分组数时才压缩，避免为稠密幅值增加移位工作。 */
     private static int compactMagnitudeShift(long w0, long w1, long w2, long w3, int length) {
         if (length <= 64) {
@@ -734,6 +755,92 @@ public final class Binary256 implements Binary<Binary256> {
         return fromDyadic(negative, multiplyMagnitude(a0, a1, a2, a3, alength, b0, b1, b2, b3, blength), scale);
     }
 
+    /** 正常幅值恰为 237 位，只检查减少分组所需的低零位，不定位全部低零位。 */
+    private int normalMultiplyGroups() {
+        long mask = (1L << 45) - 1;
+        if ((l3 & mask) != 0) {
+            return 4;
+        }
+        if (l3 != 0 || (l2 & mask) != 0) {
+            return 3;
+        }
+        if (l2 != 0 || (l1 & mask) != 0) {
+            return 2;
+        }
+        return 1;
+    }
+
+    /** 两侧为正常数；scale 是未压缩乘积的位权，各路径只移除其容量允许的低零位。 */
+    private Binary256 multiplyNormal(Binary256 other, boolean negative, long scale) {
+        int agroups = normalMultiplyGroups(), bgroups = other.normalMultiplyGroups();
+        if (agroups != bgroups) {
+            return multiplyNormalMixed(other, negative, scale, agroups, bgroups);
+        }
+        return switch (agroups) {
+            case 1 -> multiplyNormal64(other, negative, scale);
+            case 2 -> multiplyNormal128(other, negative, scale);
+            case 3 -> multiplyNormal192(other, negative, scale);
+            default -> multiplyNormalFull(other, negative, scale);
+        };
+    }
+
+    /** 两侧各移除 173 个低零位，完整 128 位乘积无需数组。 */
+    private Binary256 multiplyNormal64(Binary256 other, boolean negative, long scale) {
+        long a = (l1 >>> 45) | (((l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        long b = (other.l1 >>> 45) | (((other.l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        return fromDyadic(negative, a * b, Math.unsignedMultiplyHigh(a, b), scale + 346);
+    }
+
+    /** 两侧各移除 109 个低零位，以四组保存完整乘积。 */
+    private Binary256 multiplyNormal128(Binary256 other, boolean negative, long scale) {
+        long a0 = (l2 >>> 45) | (l1 << 19);
+        long a1 = (l1 >>> 45) | (((l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        long b0 = (other.l2 >>> 45) | (other.l1 << 19);
+        long b1 = (other.l1 >>> 45) | (((other.l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        return fromDyadic(negative, multiplyNormalMagnitude(a0, a1, 0, 0, 2, b0, b1, 0, 0, 2), scale + 218);
+    }
+
+    /** 两侧各移除 45 个低零位，以六组保存完整乘积。 */
+    private Binary256 multiplyNormal192(Binary256 other, boolean negative, long scale) {
+        long a0 = (l3 >>> 45) | (l2 << 19), a1 = (l2 >>> 45) | (l1 << 19);
+        long a2 = (l1 >>> 45) | (((l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        long b0 = (other.l3 >>> 45) | (other.l2 << 19), b1 = (other.l2 >>> 45) | (other.l1 << 19);
+        long b2 = (other.l1 >>> 45) | (((other.l0 & FRACTION_MASK) | HIDDEN_BIT) << 19);
+        return fromDyadic(negative, multiplyNormalMagnitude(a0, a1, a2, 0, 3, b0, b1, b2, 0, 3), scale + 90);
+    }
+
+    /** 两侧为正常数，直接保留原始四组幅值；scale 是未压缩乘积的位权。 */
+    private Binary256 multiplyNormalFull(Binary256 other, boolean negative, long scale) {
+        return fromDyadic(negative, multiplyNormalMagnitude(l3, l2, l1, (l0 & FRACTION_MASK) | HIDDEN_BIT, 4,
+                other.l3, other.l2, other.l1, (other.l0 & FRACTION_MASK) | HIDDEN_BIT, 4), scale);
+    }
+
+    private Binary256 multiplyNormalMixed(Binary256 other, boolean negative, long scale, int agroups, int bgroups) {
+        long adjusted = scale + (agroups == 4 ? 0 : 237 - agroups * 64) + (bgroups == 4 ? 0 : 237 - bgroups * 64);
+        return fromDyadic(negative, multiplyNormalMagnitude(
+                normalMultiplyWord(agroups, 0), normalMultiplyWord(agroups, 1),
+                normalMultiplyWord(agroups, 2), normalMultiplyWord(agroups, 3), agroups,
+                other.normalMultiplyWord(bgroups, 0), other.normalMultiplyWord(bgroups, 1),
+                other.normalMultiplyWord(bgroups, 2), other.normalMultiplyWord(bgroups, 3), bgroups), adjusted);
+    }
+
+    /** groups 是正常幅值的最少组数；压缩距离只改变来源分组，组内移位固定为 45。 */
+    private long normalMultiplyWord(int groups, int index) {
+        if (index >= groups) {
+            return 0;
+        }
+        long top = (l0 & FRACTION_MASK) | HIDDEN_BIT;
+        if (groups == 4) {
+            return fourWord(l3, l2, l1, top, index);
+        }
+        return switch (index + 3 - groups) {
+            case 0 -> (l3 >>> 45) | (l2 << 19);
+            case 1 -> (l2 >>> 45) | (l1 << 19);
+            case 2 -> (l1 >>> 45) | (top << 19);
+            default -> 0;
+        };
+    }
+
     @Override
     public Binary256 multiply(Binary256 other) {
         Objects.requireNonNull(other);
@@ -762,6 +869,9 @@ public final class Binary256 implements Binary<Binary256> {
         power = powerOfTwoExponent();
         if (power != Integer.MIN_VALUE) {
             return other.scalbFinite(power, negative);
+        }
+        if (encodedExponent() != 0 && other.encodedExponent() != 0) {
+            return multiplyNormal(other, negative, minimumExponent - 472L);
         }
         return multiplyFinite(other, negative);
     }
