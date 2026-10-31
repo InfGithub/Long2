@@ -3,6 +3,7 @@ package com.inf.long2.binaries;
 import static com.inf.long2.binaries.Binary256CompatibilityFixtures.*;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -89,6 +90,462 @@ class Binary256CompatibilityTest {
             values.add(positive.negative());
         }
         return values;
+    }
+
+    @Test
+    void preservesSquareRootRoundingAtBinadeEdgesAndExtremes() {
+        for (int exponent : new int[] {-262142, -262141, -1, 0, 1, 262142, 262143}) {
+            for (BigInteger fraction : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(235), FRACTION_MASK.subtract(ONE), FRACTION_MASK)) {
+                Bits input = normal(false, exponent, fraction);
+                assertRaw(input.baseline().sqrt(), input.actual().sqrt(), "sqrt binade edge=" + input);
+            }
+        }
+        for (int bit : new int[] {0, 1, 63, 64, 127, 128, 191, 192, 235}) {
+            Bits input = bits(ONE.shiftLeft(bit));
+            assertRaw(input.baseline().sqrt(), input.actual().sqrt(), "sqrt subnormal=" + input);
+        }
+    }
+
+    private static void assertSquareRoot(Bits bits) {
+        Binary256 input = bits.actual(), result = input.sqrt();
+        assertRaw(bits.baseline().sqrt(), result, "Newton sqrt input=" + bits);
+        assertEquals(raw(Binary256Reference.sqrt(input)), raw(result));
+        assertEquals(bits, raw(input));
+    }
+
+    @Test
+    void preservesNewtonSquareRootsAcrossEverySubnormalMagnitudeWidth() {
+        Random random = new Random(0x2565007B175L);
+        for (int length = 1; length <= 236; length++) {
+            for (BigInteger magnitude : List.of(ONE.shiftLeft(length - 1), ONE.shiftLeft(length).subtract(ONE),
+                    new BigInteger(length, random).setBit(length - 1))) {
+                assertSquareRoot(bits(magnitude));
+            }
+        }
+    }
+
+    @Test
+    void preservesNewtonSquareRootRoundingBoundariesAcrossExponentParityAndRange() {
+        for (BigInteger radicand : squareRootRoundingBoundaries()) {
+            int parity = radicand.bitLength() - 473;
+            BigInteger magnitude = radicand.shiftRight(236 + parity);
+            assertEquals(radicand, magnitude.shiftLeft(236 + parity));
+            for (int exponent : new int[] {-262142, -262141, -1023, -1022, -1, 0, 1, 1022, 1023, 262142, 262143}) {
+                if ((exponent & 1) == parity) {
+                    assertSquareRoot(normal(false, exponent, magnitude.and(FRACTION_MASK)));
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesRandomNewtonSquareRootsAcrossTheFullFiniteRange() {
+        Random random = new Random(0x2565A7EF10A7L);
+        for (int i = 0; i < 5000; i++) {
+            Bits input = i % 4 == 0 ? bits(new BigInteger(236, random).setBit(0))
+                    : normal(false, random.nextInt(-262142, 262144), new BigInteger(236, random));
+            assertSquareRoot(input);
+        }
+    }
+
+    private static void assertMultiply(Bits a, Bits b) {
+        Binary256 x = a.actual(), y = b.actual();
+        assertRaw(a.baseline().multiply(b.baseline()), x.multiply(y), "multiply a=" + a + " b=" + b);
+        assertEquals(a, raw(x));
+        assertEquals(b, raw(y));
+    }
+
+    @Test
+    void preservesMultiplicationAtGuaranteedOverflowAndUnderflowThresholds() {
+        for (int sum : new int[] {-262382, -262381, -262380, -262379, -262378, 262142, 262143, 262144, 262145}) {
+            int ea = Math.floorDiv(sum, 2), eb = sum - ea;
+            for (BigInteger af : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(235), FRACTION_MASK)) {
+                for (BigInteger bf : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(235), FRACTION_MASK)) {
+                    Bits a = normal(false, ea, af), b = normal(false, eb, bf);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertMultiply(x, y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesMultiplicationBySignedPowersOfTwoInBothOperandOrders() {
+        List<Bits> values = new ArrayList<>(specialValues());
+        for (int exponent : new int[] {-262142, -237, -1, 0, 1, 237, 262143}) {
+            values.add(normal(false, exponent, ONE));
+            values.add(normal(false, exponent, FRACTION_MASK));
+        }
+        for (int bit : new int[] {0, 1, 63, 64, 127, 128, 191, 192, 235}) {
+            values.add(bits(ONE.shiftLeft(bit).add(ONE)));
+        }
+        for (int exponent : new int[] {-262378, -262377, -262142, -1, 0, 1, 262142, 262143}) {
+            Bits unit = power(exponent);
+            for (Bits input : values) {
+                for (Bits a : List.of(input, input.negative())) {
+                    for (Bits b : List.of(unit, unit.negative())) {
+                        assertMultiply(a, b);
+                        assertMultiply(b, a);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaWithSignedUnitMultipliersIncludingRawNaNsAndZeros() {
+        List<Bits> values = new ArrayList<>(specialValues());
+        for (int exponent : new int[] {-262142, -1, 0, 1, 262143}) {
+            values.add(normal(false, exponent, ONE));
+            values.add(normal(true, exponent, FRACTION_MASK));
+        }
+        for (Bits a : values) {
+            for (Bits c : values) {
+                assertFma(a, UNIT, c);
+                assertFma(a, UNIT.negative(), c);
+            }
+        }
+    }
+
+    @Test
+    void preservesRemaindersAroundMagnitudeAndHalfMagnitudeShortcuts() {
+        for (int exponent : new int[] {-262141, -1, 0, 1, 262143}) {
+            for (BigInteger fraction : List.of(BigInteger.ZERO, ONE.shiftLeft(235), FRACTION_MASK)) {
+                Bits divisor = normal(false, exponent, fraction);
+                for (Bits center : List.of(divisor, normal(false, exponent - 1, fraction))) {
+                    BigInteger encoding = new BigInteger(center.toString(), 16);
+                    for (int delta : new int[] {-1, 0, 1}) {
+                        Bits a = bits(encoding.add(BigInteger.valueOf(delta)));
+                        for (Bits x : List.of(a, a.negative())) {
+                            for (Bits y : List.of(divisor, divisor.negative())) {
+                                assertRemainders(x, y, "magnitude shortcut");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (int exponent : new int[] {-262378, -262143, -262142, -200000, 0, 100000, 262143}) {
+            Bits divisor = power(exponent);
+            for (Bits a : List.of(MINIMUM, bits(BigInteger.valueOf(3)), bits(FRACTION_MASK),
+                    normal(false, -262142, ONE), normal(false, 0, FRACTION_MASK), MAXIMUM)) {
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(divisor, divisor.negative())) {
+                        assertRemainders(x, y, "power-of-two divisor");
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesInt256RoundingForEveryMagnitudeLengthAndCarryPosition() {
+        for (int length = 1; length <= 255; length++) {
+            BigInteger top = ONE.shiftLeft(length - 1);
+            List<BigInteger> magnitudes = new ArrayList<>(List.of(top.subtract(ONE), top, top.add(ONE),
+                    ONE.shiftLeft(length).subtract(ONE)));
+            int discarded = length - 237;
+            if (discarded > 0) {
+                BigInteger half = ONE.shiftLeft(discarded - 1);
+                for (int carry : new int[] {1, 63, 64, 127, 128, 191, 192, 236, 237}) {
+                    BigInteger retained = ONE.shiftLeft(236).or(ONE.shiftLeft(carry).subtract(ONE));
+                    for (int delta : new int[] {-1, 0, 1}) {
+                        magnitudes.add(retained.shiftLeft(discarded).add(half).add(BigInteger.valueOf(delta)));
+                    }
+                }
+            }
+            for (BigInteger magnitude : magnitudes) {
+                if (magnitude.bitLength() > 255) {
+                    continue;
+                }
+                for (boolean negative : new boolean[] {false, true}) {
+                    BigInteger signed = negative ? magnitude.negate() : magnitude;
+                    Int256 source = Int256.of(signed.shiftRight(192).longValue(), signed.shiftRight(128).longValue(),
+                            signed.shiftRight(64).longValue(), signed.longValue());
+                    Binary256 actual = Binary256.of(source);
+                    assertRaw(Binary256Baseline.of(source), actual, "Int256 length=" + length);
+                    assertEquals(raw(Binary256Reference.round(negative && magnitude.signum() != 0, magnitude, ONE, 0)), raw(actual));
+                    for (int group = 0; group < 4; group++) {
+                        assertEquals(signed.shiftRight((3 - group) * 64).longValue(), source.getLong(group));
+                    }
+                }
+            }
+        }
+        assertInteger(Int256.MIN_VALUE, "Int256 minimum magnitude");
+    }
+
+    @Test
+    void preservesWideIntegerRoundingAcrossEveryWordOfTheRetainedWindow() {
+        for (int length : new int[] {238, 255, 256, 257, 300, 474, 475, 511, 512, 513, 712, 713, 1024}) {
+            int discarded = length - 237, width = ((length + 64) / 64) * 64;
+            for (int carry : new int[] {1, 63, 64, 127, 128, 191, 192, 236, 237}) {
+                BigInteger retained = ONE.shiftLeft(236).or(ONE.shiftLeft(carry).subtract(ONE));
+                BigInteger center = retained.shiftLeft(discarded).add(ONE.shiftLeft(discarded - 1));
+                for (int delta : new int[] {-1, 0, 1}) {
+                    BigInteger magnitude = center.add(BigInteger.valueOf(delta));
+                    for (boolean negative : new boolean[] {false, true}) {
+                        Int<?> source = integer(width, negative ? magnitude.negate() : magnitude);
+                        Binary256 actual = Binary256.of(source);
+                        assertRaw(Binary256Baseline.of(source), actual, "wide integer rounding length=" + length);
+                        assertEquals(raw(Binary256Reference.round(negative, magnitude, ONE, 0)), raw(actual));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesDirectRoundPackAtCarryUnderflowAndOverflowMidpoints() {
+        List<BigInteger> retained = List.of(BigInteger.ZERO, ONE, BigInteger.TWO, ONE.shiftLeft(63).subtract(ONE),
+                ONE.shiftLeft(64).subtract(ONE), ONE.shiftLeft(128).subtract(ONE), ONE.shiftLeft(192).subtract(ONE),
+                ONE.shiftLeft(236).subtract(ONE), ONE.shiftLeft(236), ONE.shiftLeft(237).subtract(ONE));
+        for (long quantum : new long[] {-262378, 0, 261907}) {
+            for (int discarded : new int[] {1, 2, 63, 64, 65, 127, 128, 192, 236, 237, 474}) {
+                for (BigInteger prefix : retained) {
+                    BigInteger center = prefix.shiftLeft(discarded).add(ONE.shiftLeft(discarded - 1));
+                    for (int delta : new int[] {-1, 0, 1}) {
+                        BigInteger magnitude = center.add(BigInteger.valueOf(delta));
+                        if (magnitude.signum() == 0) {
+                            continue;
+                        }
+                        int padding = magnitude.bitLength() < 2 ? 1 : 0;
+                        BigInteger sourceMagnitude = magnitude.shiftLeft(padding);
+                        Binary.Format format = new Binary.Format(sourceMagnitude.bitLength(), -400000, 400000);
+                        for (boolean negative : new boolean[] {false, true}) {
+                            long scale = quantum - discarded;
+                            Binary<?> source = binary(format, negative, sourceMagnitude, scale - padding);
+                            Binary256 actual = Binary256.of(source);
+                            assertRaw(Binary256Baseline.of(source), actual, "roundPack quantum=" + quantum + " dropped=" + discarded);
+                            assertEquals(raw(Binary256Reference.round(negative, magnitude, ONE, scale)), raw(actual));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void boundsGenericIntegerBitReadsWhilePreservingMidpointTails() {
+        for (int length : new int[] {1, 63, 64, 237, 238, 239, 240, 255, 256, 257, 4096, 65536, 262144}) {
+            int width = ((length + 64) / 64) * 64;
+            List<BigInteger> values = new ArrayList<>(List.of(ONE.shiftLeft(length - 1), ONE.shiftLeft(length).subtract(ONE)));
+            if (length > 239) {
+                for (int parity : new int[] {0, 1}) {
+                    BigInteger prefix = ONE.shiftLeft(236).add(BigInteger.valueOf(parity));
+                    BigInteger midpoint = prefix.shiftLeft(length - 237).setBit(length - 238);
+                    for (int delta : new int[] {-1, 0, 1}) {
+                        values.add(midpoint.add(BigInteger.valueOf(delta)));
+                    }
+                }
+            }
+            for (BigInteger magnitude : values) {
+                for (boolean negative : new boolean[] {false, true}) {
+                    BigInteger signed = negative ? magnitude.negate() : magnitude;
+                    int[] reads = new int[2];
+                    Binary256 actual = Binary256.of(integer(width, signed, reads));
+                    assertRaw(Binary256Baseline.of(integer(width, signed)), actual, "bounded Int length=" + length);
+                    assertTrue(reads[0] <= 239, "testBit reads=" + reads[0]);
+                    assertTrue(reads[1] <= 1, "bitCount reads=" + reads[1]);
+                    if (length <= 239) {
+                        assertEquals(0, reads[1]);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void boundsGenericMinimumNegativeMagnitudeReads() {
+        for (int width : new int[] {64, 256, 320, 65536, 262144}) {
+            BigInteger minimum = ONE.shiftLeft(width - 1).negate();
+            int[] reads = new int[2];
+            assertRaw(Binary256Baseline.of(integer(width, minimum)), Binary256.of(integer(width, minimum, reads)),
+                    "minimum Int width=" + width);
+            assertTrue(reads[0] <= 239);
+            assertEquals(0, reads[1]);
+        }
+    }
+
+    @Test
+    void stopsMaximumPrecisionSubnormalReadsAtTheZeroRoundingBoundary() {
+        int precision = Integer.MAX_VALUE;
+        Binary.Format format = new Binary.Format(precision, 0, 0);
+        long scale = 1L - precision, guard = -262379L - scale;
+        int groups = (int) ((precision + 63L) / 64), guardGroup = groups - 1 - (int) (guard / 64);
+        for (boolean negative : new boolean[] {false, true}) {
+            int[] reads = new int[1];
+            Binary<?> below = sparseBinary(format, negative, scale, new long[] {0}, index -> {
+                assertTrue(index <= guardGroup, "irrelevant low group=" + index);
+                reads[0]++;
+            });
+            assertEquals(negative ? ZERO.negative() : ZERO, raw(Binary256.of(below)));
+            assertTrue(reads[0] <= guardGroup + 1);
+            Binary<?> above = sparseBinary(format, negative, scale, new long[] {guard, 0}, index ->
+                    assertTrue(index <= guardGroup + 4 || index == groups - 1, "unexpected group=" + index));
+            assertEquals(negative ? MINIMUM.negative() : MINIMUM, raw(Binary256.of(above)));
+        }
+    }
+
+    @Test
+    void skipsSignificandReadsWhenTheSourceRangeAlreadyDeterminesTheResult() {
+        int precision = Integer.MAX_VALUE;
+        Binary.Format format = new Binary.Format(precision, Integer.MIN_VALUE, Integer.MAX_VALUE);
+        for (int exponent : new int[] {Integer.MIN_VALUE, -262380, 262144, Integer.MAX_VALUE}) {
+            for (boolean negative : new boolean[] {false, true}) {
+                Binary<?> source = sparseBinary(format, negative, (long) exponent - precision + 1,
+                        new long[] {precision - 1L}, index -> { throw new AssertionError("unnecessary read=" + index); });
+                Bits expected = exponent < -262379 ? ZERO : INFINITY;
+                assertEquals(negative ? expected.negative() : expected, raw(Binary256.of(source)));
+            }
+        }
+        Binary<?> tiny = sparseBinary(format, false, (long) Integer.MIN_VALUE - precision + 1,
+                new long[] {0}, index -> { throw new AssertionError("unnecessary read=" + index); });
+        assertEquals(ZERO, raw(Binary256.of(tiny)));
+    }
+
+    @Test
+    void preservesSubnormalSourceValuesOnBothSidesOfTheMinimumRoundingBit() {
+        for (int precision : new int[] {240, 255, 256, 257, 511, 512, 65536}) {
+            for (int emin : new int[] {-262379, -262378, -262315, -262314, -262313, -262142, 0}) {
+                Binary.Format format = new Binary.Format(precision, emin, 0);
+                long scale = (long) emin - precision + 1, guard = -262379L - scale;
+                if (guard < 0 || guard >= precision) {
+                    continue;
+                }
+                BigInteger center = ONE.shiftLeft((int) guard);
+                for (int delta : new int[] {-1, 0, 1}) {
+                    BigInteger magnitude = center.add(BigInteger.valueOf(delta));
+                    for (boolean negative : new boolean[] {false, true}) {
+                        Binary<?> source = binary(format, negative, magnitude, scale);
+                        Binary256 actual = Binary256.of(source);
+                        assertRaw(Binary256Baseline.of(source), actual, "subnormal source precision=" + precision + " emin=" + emin);
+                        assertEquals(raw(Binary256Reference.round(negative, magnitude, ONE, scale)), raw(actual));
+                    }
+                }
+            }
+        }
+    }
+
+    private static void assertAddSubtract(Bits a, Bits b) {
+        Binary256 x = a.actual(), y = b.actual();
+        assertRaw(a.baseline().add(b.baseline()), x.add(y), "aligned add a=" + a + " b=" + b);
+        assertRaw(a.baseline().subtract(b.baseline()), x.subtract(y), "aligned subtract a=" + a + " b=" + b);
+        assertEquals(raw(Binary256Reference.add(x, y)), raw(x.add(y)));
+        assertEquals(raw(Binary256Reference.add(x, y.negate())), raw(x.subtract(y)));
+        assertEquals(a, raw(x));
+        assertEquals(b, raw(y));
+    }
+
+    @Test
+    void preservesSingleWorkspaceAdditionAcrossAllAlignmentBitsAndBorrowDirections() {
+        for (int distance = 0; distance <= 240; distance++) {
+            for (BigInteger af : List.of(BigInteger.ZERO, FRACTION_MASK)) {
+                for (BigInteger bf : List.of(BigInteger.ZERO, FRACTION_MASK)) {
+                    Bits a = normal(false, 0, af), b = normal(false, -distance, bf);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertAddSubtract(x, y);
+                            assertAddSubtract(y, x);
+                        }
+                    }
+                }
+            }
+        }
+        for (int exponent : new int[] {-262142, -262141, 262142, 262143}) {
+            for (int distance : new int[] {0, 1, 63, 64, 65, 127, 128, 191, 192, 237, 238, 239}) {
+                int otherExponent = exponent - distance;
+                if (otherExponent < -262378) {
+                    continue;
+                }
+                Bits a = normal(false, exponent, FRACTION_MASK), b = power(otherExponent);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(b, b.negative())) {
+                        assertAddSubtract(x, y);
+                        assertAddSubtract(y, x);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFieldMultiplicationAcrossLimbCarriesAndSubnormalInputWidths() {
+        List<BigInteger> fractions = new ArrayList<>(List.of(BigInteger.ZERO, ONE, FRACTION_MASK));
+        for (int bit : new int[] {63, 64, 127, 128, 191, 192, 235}) {
+            fractions.add(ONE.shiftLeft(bit));
+            fractions.add(ONE.shiftLeft(bit).subtract(ONE));
+        }
+        for (BigInteger af : fractions) {
+            for (BigInteger bf : fractions) {
+                Bits a = normal(false, 0, af), b = normal(false, 0, bf);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(b, b.negative())) {
+                        assertMultiply(x, y);
+                        assertEquals(raw(Binary256Reference.multiply(x.actual(), y.actual())), raw(x.actual().multiply(y.actual())));
+                        assertFma(x, y, UNIT);
+                        assertFma(x, y, UNIT.negative());
+                    }
+                }
+            }
+        }
+        for (int length : new int[] {1, 2, 63, 64, 65, 127, 128, 129, 191, 192, 193, 235, 236}) {
+            Bits a = bits(ONE.shiftLeft(length).subtract(ONE)), b = normal(false, 262143, FRACTION_MASK);
+            Bits c = power(length - 236);
+            for (Bits x : List.of(a, a.negative())) {
+                for (Bits y : List.of(b, b.negative())) {
+                    assertMultiply(x, y);
+                    assertMultiply(y, x);
+                    assertFma(x, y, c);
+                    assertFma(x, y, c.negative());
+                    assertFma(y, x, c);
+                    assertFma(y, x, c.negative());
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesSingleWorkspaceFmaAcrossEveryShiftAndBothSubtractionDirections() {
+        for (BigInteger af : List.of(BigInteger.ZERO, ONE, FRACTION_MASK)) {
+            for (BigInteger bf : List.of(ONE, FRACTION_MASK)) {
+                Bits a = normal(false, 0, af), b = normal(false, 0, bf);
+                BigInteger product = ONE.shiftLeft(236).add(af).multiply(ONE.shiftLeft(236).add(bf));
+                int productExponent = product.bitLength() - 473;
+                for (int gap = -238; gap <= 474; gap++) {
+                    Bits c = normal(false, productExponent - gap, FRACTION_MASK);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits z : List.of(c, c.negative())) {
+                            assertFma(x, b, z);
+                            assertEquals(raw(Binary256Reference.fma(x.actual(), b.actual(), z.actual())),
+                                    raw(x.actual().fma(b.actual(), z.actual())));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesExactCancellationAndAliasedInputsAcrossRepeatedCalls() {
+        for (BigInteger fraction : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(63), ONE.shiftLeft(128), FRACTION_MASK)) {
+            for (int exponent : new int[] {-262142, -1, 0, 1, 262142}) {
+                Bits a = normal(false, exponent, fraction), c = normal(true, exponent + 1, fraction);
+                assertFma(a, power(1), c);
+                assertFma(a.negative(), power(1), normal(false, exponent + 1, fraction));
+                Binary256 value = a.actual();
+                Binary256Baseline baseline = a.baseline();
+                for (int repeat = 0; repeat < 3; repeat++) {
+                    assertRaw(baseline.add(baseline), value.add(value), "aliased addition");
+                    assertRaw(baseline.subtract(baseline), value.subtract(value), "aliased subtraction");
+                    assertRaw(baseline.multiply(baseline), value.multiply(value), "aliased multiplication");
+                    assertRaw(baseline.fma(baseline, baseline), value.fma(value, value), "aliased FMA");
+                    assertEquals(a, raw(value));
+                }
+            }
+        }
     }
 
     private static List<Bits> boundaryValues() {
@@ -307,6 +764,187 @@ class Binary256CompatibilityTest {
     }
 
     @Test
+    void preservesFmaOverflowMidpointWithBothTinyTailDirections() {
+        Bits a = exact(ONE.shiftLeft(119).subtract(ONE), 130953);
+        Bits b = exact(ONE.shiftLeft(119).add(ONE), 130953);
+        for (Bits x : List.of(a, a.negative())) {
+            for (Bits y : List.of(b, b.negative())) {
+                boolean negative = x.baseline().signBit() ^ y.baseline().signBit();
+                for (Bits tail : List.of(MINIMUM, MINIMUM.negative(), ZERO, ZERO.negative())) {
+                    assertFma(x, y, tail);
+                }
+                Bits increasing = negative ? MINIMUM.negative() : MINIMUM;
+                Bits decreasing = negative ? MINIMUM : MINIMUM.negative();
+                assertEquals(negative ? INFINITY.negative() : INFINITY, raw(x.actual().fma(y.actual(), increasing.actual())));
+                assertEquals(negative ? MAXIMUM.negative() : MAXIMUM, raw(x.actual().fma(y.actual(), decreasing.actual())));
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaJustAboveAndBelowMidpointsAtFullProductPrecision() {
+        BigInteger modulus = ONE.shiftLeft(237), half = ONE.shiftLeft(236);
+        for (int delta : new int[] {-1, 1}) {
+            BigInteger a = null, b = null;
+            for (int odd = 1; odd <= 63; odd += 2) {
+                BigInteger candidate = modulus.subtract(BigInteger.valueOf(odd));
+                BigInteger partner = half.add(BigInteger.valueOf(delta)).multiply(candidate.modInverse(modulus)).mod(modulus);
+                if (partner.bitLength() == 237 && candidate.multiply(partner).bitLength() == 474) {
+                    a = candidate;
+                    b = partner;
+                    break;
+                }
+            }
+            if (a == null) {
+                throw new AssertionError("No full-precision midpoint-neighbor product");
+            }
+            assertEquals(half.add(BigInteger.valueOf(delta)), a.multiply(b).mod(modulus));
+            Bits left = exact(a, -236), right = exact(b, -236);
+            for (int gap : new int[] {472, 473, 474, 475, 476}) {
+                for (BigInteger fraction : List.of(BigInteger.ZERO, ONE, FRACTION_MASK)) {
+                    Bits addend = normal(false, 1 - gap, fraction);
+                    for (Bits x : List.of(left, left.negative())) {
+                        for (Bits y : List.of(right, right.negative())) {
+                            assertFma(x, y, addend);
+                            assertFma(x, y, addend.negative());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaAtBothDominanceThresholdsAndTheExtremeExponentGaps() {
+        Bits multiplier = exact(BigInteger.valueOf(3), -1);
+        for (int gap : new int[] {237, 238, 239, 240, 473, 474, 475, 476, 200000}) {
+            for (BigInteger fraction : List.of(BigInteger.ZERO, ONE, FRACTION_MASK)) {
+                Bits productSource = normal(false, -gap, fraction);
+                for (Bits x : List.of(productSource, productSource.negative())) {
+                    for (Bits y : List.of(multiplier, multiplier.negative())) {
+                        assertFma(x, y, UNIT);
+                        assertFma(x, y, UNIT.negative());
+                        assertFma(UNIT, y, x);
+                        assertFma(UNIT.negative(), y, x);
+                    }
+                }
+            }
+        }
+        for (Bits a : List.of(MINIMUM, MINIMUM.negative(), MAXIMUM, MAXIMUM.negative())) {
+            for (Bits b : List.of(MINIMUM, MINIMUM.negative(), UNIT, UNIT.negative())) {
+                for (Bits c : List.of(MINIMUM, MINIMUM.negative(), MAXIMUM, MAXIMUM.negative())) {
+                    assertFma(a, b, c);
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaExactAlignmentWithShortAndFullLengthSignificands() {
+        List<Bits> subnormals = List.of(MINIMUM, bits(BigInteger.valueOf(3)), bits(ONE.shiftLeft(63)),
+                bits(ONE.shiftLeft(128).add(ONE)), bits(FRACTION_MASK));
+        for (Bits a : subnormals) {
+            Binary256Baseline input = a.baseline();
+            int length = 0;
+            for (int group = 0; group < 4; group++) {
+                long word = input.getSignificandLong(group);
+                if (word != 0) {
+                    length = (3 - group) * 64 + 64 - Long.numberOfLeadingZeros(word);
+                    break;
+                }
+            }
+            int sourceExponent = -262378 + length - 1;
+            for (int multiplierExponent : new int[] {0, 1, 236, 237, 474, 475}) {
+                Bits b = normal(false, multiplierExponent, FRACTION_MASK);
+                int productExponentLower = sourceExponent + multiplierExponent;
+                for (int difference : new int[] {-239, -238, 0, 238, 474, 475}) {
+                    int addendExponent = productExponentLower - difference;
+                    if (addendExponent < -262378 || addendExponent > 262143) {
+                        continue;
+                    }
+                    Bits c = power(addendExponent);
+                    assertFma(a, b, c);
+                    assertFma(a, b, c.negative());
+                    assertFma(a.negative(), b, c);
+                    assertFma(a.negative(), b, c.negative());
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaBorrowPropagationAcrossTheWholeAlignmentWorkspace() {
+        Bits smallA = normal(false, -131308, FRACTION_MASK);
+        Bits smallB = normal(false, -131309, FRACTION_MASK);
+        Bits largeA = normal(false, 0, FRACTION_MASK);
+        Bits largeB = normal(false, 0, FRACTION_MASK);
+        Bits distant = normal(false, -473, FRACTION_MASK);
+        for (Bits x : List.of(smallA, smallA.negative())) {
+            for (Bits y : List.of(smallB, smallB.negative())) {
+                assertFma(x, y, MINIMUM);
+                assertFma(x, y, MINIMUM.negative());
+            }
+        }
+        for (Bits x : List.of(largeA, largeA.negative())) {
+            for (Bits y : List.of(largeB, largeB.negative())) {
+                assertFma(x, y, distant);
+                assertFma(x, y, distant.negative());
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaAcrossTheEightAndTwelveWordWorkspaceBoundary() {
+        for (BigInteger leftFraction : List.of(BigInteger.ZERO, ONE, FRACTION_MASK)) {
+            for (BigInteger rightFraction : List.of(BigInteger.ZERO, ONE, FRACTION_MASK)) {
+                Bits a = normal(false, 0, leftFraction), b = normal(false, 0, rightFraction);
+                for (int gap : new int[] {273, 274, 275, 276}) {
+                    Bits c = normal(false, 1 - gap, FRACTION_MASK);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertFma(x, y, c);
+                            assertFma(x, y, c.negative());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaDeepCancellationNormalSubnormalAndZeroResults() {
+        for (int exponent : new int[] {-262378, -262143, -262142, -1, 0, 1, 262142, 262143}) {
+            Bits a = power(exponent);
+            assertFma(a, UNIT, a.negative());
+            assertFma(a.negative(), UNIT, a);
+        }
+        for (int exponent : new int[] {-262142, -262141, -262140, -261905, -261904, -100000, 0, 100000, 262143}) {
+            Bits a = exact(ONE.shiftLeft(119).add(ONE), exponent - 119L);
+            Bits b = exact(ONE.shiftLeft(119).subtract(ONE), -119);
+            Bits c = power(exponent);
+            assertFma(a, b, c.negative());
+            assertFma(a.negative(), b, c);
+        }
+        for (Bits addend : List.of(ZERO, ZERO.negative(), MINIMUM, MINIMUM.negative())) {
+            assertFma(MINIMUM, power(-1), addend);
+            assertFma(MINIMUM.negative(), power(-1), addend);
+        }
+    }
+
+    @Test
+    void preservesRandomFmaAcrossBothFixedWorkspaceThresholds() {
+        Random random = new Random(0x256F0AF17EDL);
+        int[] differences = {-1000, -240, -239, -238, -1, 0, 1, 237, 238, 473, 474, 475, 476, 1000};
+        for (int i = 0; i < 900; i++) {
+            int ea = random.nextInt(-120000, 120001), eb = random.nextInt(-120000, 120001);
+            Bits a = randomFinite(random, ea), b = randomFinite(random, eb);
+            int ec = ea + eb - differences[i % differences.length];
+            Bits c = randomFinite(random, ec);
+            assertFma(a, b, c);
+        }
+    }
+
+    @Test
     void preservesRemainderQuotientParityAndVeryLargeExponentDifferences() {
         for (int exponent : new int[] {-262142, -100000, -1, 0, 1, 100000, 262143}) {
             for (int divisor : new int[] {1, 2, 3, 5, 7}) {
@@ -325,6 +963,170 @@ class Binary256CompatibilityTest {
                 Bits a = exact(BigInteger.valueOf(numerator), 0), b = exact(BigInteger.valueOf(denominator), 0);
                 assertArithmetic(a, b);
                 assertArithmetic(a.negative(), b);
+            }
+        }
+    }
+
+    private static void assertRemainders(Bits a, Bits b, String label) {
+        Binary256 actualA = a.actual(), actualB = b.actual();
+        assertRaw(a.baseline().remainder(b.baseline()), actualA.remainder(actualB),
+                label + " remainder a=" + a + " b=" + b);
+        assertRaw(a.baseline().ieeeRemainder(b.baseline()), actualA.ieeeRemainder(actualB),
+                label + " IEEE remainder a=" + a + " b=" + b);
+        assertEquals(a, raw(actualA), "remainder receiver must remain unchanged");
+        assertEquals(b, raw(actualB), "remainder divisor must remain unchanged");
+    }
+
+    @Test
+    void preservesRemaindersAcrossDirectAndModularReductionBoundaries() {
+        int[] differences = {-3, -2, -1, 0, 1, 63, 64, 65, 236, 237, 238, 239, 1000, 524285};
+        List<BigInteger> fractions = List.of(BigInteger.ZERO, ONE, FRACTION_MASK);
+        for (int ea : new int[] {-262142, 0, 262143}) {
+            for (int difference : differences) {
+                int eb = ea - difference;
+                if (eb < -262142 || eb > 262143) {
+                    continue;
+                }
+                for (BigInteger af : fractions) {
+                    for (BigInteger bf : fractions) {
+                        Bits a = normal(false, ea, af), b = normal(false, eb, bf);
+                        for (Bits x : List.of(a, a.negative())) {
+                            for (Bits y : List.of(b, b.negative())) {
+                                assertRemainders(x, y, "scale difference=" + difference);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (int difference : new int[] {0, 1, 236, 237, 238, 239, 1000, 524285}) {
+            for (BigInteger fraction : fractions) {
+                Bits a = normal(false, -262142 + difference, fraction);
+                for (BigInteger significand : List.of(ONE, BigInteger.TWO, BigInteger.valueOf(3), FRACTION_MASK)) {
+                    Bits b = bits(significand);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertRemainders(x, y, "subnormal divisor scale difference=" + difference);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesSquareRootRoundingNearScaledPerfectSquares() {
+        for (int bit : new int[] {0, 1, 31, 32, 63, 64, 65, 117, 118}) {
+            for (int delta : new int[] {-1, 0, 1}) {
+                BigInteger root = ONE.shiftLeft(bit).add(BigInteger.valueOf(delta));
+                if (root.signum() == 0) {
+                    continue;
+                }
+                BigInteger square = root.multiply(root);
+                for (int exponent : new int[] {-262142, -262141, -1022, -1, 0, 1, 1023, 262142, 262143}) {
+                    Bits center = exact(square, (long) exponent - square.bitLength() + 1);
+                    BigInteger encoding = new BigInteger(center.toString(), 16);
+                    for (int neighbor = -1; neighbor <= 1; neighbor++) {
+                        Bits input = bits(encoding.add(BigInteger.valueOf(neighbor)));
+                        Binary256 actual = input.actual();
+                        assertRaw(input.baseline().sqrt(), actual.sqrt(), "sqrt input=" + input);
+                        assertEquals(input, raw(actual), "square root receiver must remain unchanged");
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesRandomDivisionAndRemaindersAcrossExponentAndWordBoundaries() {
+        Random random = new Random(0x256D1A1DE7L);
+        int[] edges = {-262143, -262142, -262141, -1, 0, 1, 236, 237, 238, 262142, 262143};
+        for (int i = 0; i < 650; i++) {
+            int ea = i < 200 ? edges[random.nextInt(edges.length)] : random.nextInt(-262142, 262144);
+            int eb = i < 200 ? edges[random.nextInt(edges.length)] : Math.clamp(ea + random.nextInt(-300, 301), -262142, 262143);
+            Bits a = randomFinite(random, ea), b = randomFinite(random, eb);
+            assertRaw(a.baseline().divide(b.baseline()), a.actual().divide(b.actual()), "division a=" + a + " b=" + b);
+            assertRemainders(a, b, "random division operands");
+        }
+    }
+
+    private static void assertDivision(Bits a, Bits b) {
+        Binary256 x = a.actual(), y = b.actual();
+        Binary256 actual = x.divide(y);
+        assertRaw(a.baseline().divide(b.baseline()), actual, "grouped divide a=" + a + " b=" + b);
+        assertEquals(raw(Binary256Reference.divide(x, y)), raw(actual));
+        assertEquals(a, raw(x));
+        assertEquals(b, raw(y));
+    }
+
+    @Test
+    void preservesGroupedDivisionAcrossAllSubnormalSignificandWidths() {
+        for (int length = 1; length <= 237; length++) {
+            for (BigInteger magnitude : List.of(ONE.shiftLeft(length - 1), ONE.shiftLeft(length).subtract(ONE))) {
+                Bits divisor = exact(magnitude, -262378);
+                for (Bits a : List.of(MINIMUM, bits(FRACTION_MASK), MINIMUM_NORMAL)) {
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(divisor, divisor.negative())) {
+                            assertDivision(x, y);
+                            assertRemainders(x, y, "divisor significand length=" + length);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesGroupedDivisionAtUnderflowTiesAndTheMinimumNormalCarry() {
+        List<BigInteger> lower = new ArrayList<>(List.of(BigInteger.ZERO, ONE, BigInteger.TWO, BigInteger.valueOf(3)));
+        for (int bit : new int[] {63, 64, 127, 128, 191, 192, 235, 236}) {
+            lower.add(ONE.shiftLeft(bit).subtract(ONE));
+        }
+        Bits divisor = power(1);
+        for (BigInteger retained : lower) {
+            BigInteger midpoint = retained.shiftLeft(1).add(ONE);
+            for (int delta : new int[] {-1, 0, 1}) {
+                Bits a = exact(midpoint.add(BigInteger.valueOf(delta)), -262378);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(divisor, divisor.negative())) {
+                        assertDivision(x, y);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesGroupedDivisionAtNormalAndOverflowExponentEdges() {
+        int[][] exponents = {{-262142, 0}, {-262142, 1}, {-262142, 237}, {0, 0}, {0, -1},
+                {262142, -1}, {262143, 0}, {262143, -1}, {262143, -2}};
+        for (int[] pair : exponents) {
+            for (BigInteger af : List.of(BigInteger.ZERO, ONE, FRACTION_MASK.subtract(ONE), FRACTION_MASK)) {
+                for (BigInteger bf : List.of(BigInteger.ZERO, ONE, FRACTION_MASK.subtract(ONE), FRACTION_MASK)) {
+                    Bits a = normal(false, pair[0], af), b = normal(false, pair[1], bf);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertDivision(x, y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesLargeExponentRemaindersWithGroupedOddAndEvenModuli() {
+        for (int length : new int[] {31, 32, 33, 63, 64, 65, 127, 128, 129, 191, 192, 193, 235, 236}) {
+            Bits divisor = bits(ONE.shiftLeft(length).subtract(ONE));
+            for (int exponent : new int[] {-262142, -262141, -1, 0, 262143}) {
+                for (BigInteger fraction : List.of(ONE, FRACTION_MASK)) {
+                    Bits a = normal(false, exponent, fraction);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(divisor, divisor.negative())) {
+                            assertRemainders(x, y, "modular grouped divisor length=" + length);
+                        }
+                    }
+                }
             }
         }
     }
@@ -356,6 +1158,55 @@ class Binary256CompatibilityTest {
             assertRaw(Binary256Baseline.of(integer), Binary256.of(integer), "random long=" + integer);
             assertRaw(Binary256Baseline.of(binary64), Binary256.of(binary64), "random double");
             assertRaw(Binary256Baseline.of(binary32), Binary256.of(binary32), "random float");
+        }
+    }
+
+    @Test
+    void preservesEveryPrimitiveMagnitudeLengthAndAdjacentBitPatterns() {
+        for (int bit = 0; bit < 64; bit++) {
+            long power = 1L << bit;
+            for (long value : new long[] {power - 1, power, power + 1, -power - 1, -power, -power + 1}) {
+                assertRaw(Binary256Baseline.of(value), Binary256.of(value), "long magnitude boundary bit=" + bit);
+            }
+        }
+        for (int bit = 0; bit < 23; bit++) {
+            int power = 1 << bit;
+            for (int encoding : new int[] {power - 1, power, power + 1}) {
+                for (int sign : new int[] {0, Integer.MIN_VALUE}) {
+                    float value = Float.intBitsToFloat(encoding | sign);
+                    assertRaw(Binary256Baseline.of(value), Binary256.of(value), "float subnormal bit=" + bit);
+                }
+            }
+        }
+        for (int bit = 0; bit < 52; bit++) {
+            long power = 1L << bit;
+            for (long encoding : new long[] {power - 1, power, power + 1}) {
+                for (long sign : new long[] {0, Long.MIN_VALUE}) {
+                    double value = Double.longBitsToDouble(encoding | sign);
+                    assertRaw(Binary256Baseline.of(value), Binary256.of(value), "double subnormal bit=" + bit);
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesFmaAtBothSidesOfTheGuaranteedOverflowExponent() {
+        List<BigInteger> fractions = List.of(BigInteger.ZERO, ONE.shiftLeft(234), ONE.shiftLeft(235), FRACTION_MASK);
+        for (int leftExponent : new int[] {262142, 262143}) {
+            for (int rightExponent : new int[] {0, 1, 2, 3}) {
+                for (BigInteger leftFraction : fractions) {
+                    for (BigInteger rightFraction : fractions) {
+                        Bits a = normal(false, leftExponent, leftFraction);
+                        Bits b = normal(false, rightExponent, rightFraction);
+                        for (Bits x : List.of(a, a.negative())) {
+                            for (Bits y : List.of(b, b.negative())) {
+                                assertFma(x, y, MAXIMUM);
+                                assertFma(x, y, MAXIMUM.negative());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -403,6 +1254,19 @@ class Binary256CompatibilityTest {
     void preservesFloatAndDoubleMidpointsAndBothImmediateSourceNeighbors() {
         assertPrimitiveMidpoints(24, -126, 127, 8);
         assertPrimitiveMidpoints(53, -1022, 1023, 11);
+    }
+
+    @Test
+    void preservesRandomPrimitiveRoundingWithinTargetExponentRanges() {
+        Random random = new Random(0x256901A17AEL);
+        for (int i = 0; i < 4000; i++) {
+            int exponent = switch (i % 3) {
+                case 0 -> random.nextInt(-151, 130);
+                case 1 -> random.nextInt(-1076, 1026);
+                default -> random.nextInt(-2, 66);
+            };
+            assertPrimitives(randomFinite(random, exponent));
+        }
     }
 
     @Test
@@ -506,6 +1370,51 @@ class Binary256CompatibilityTest {
     }
 
     @Test
+    void preservesForeignMidpointTailsAcrossSourceGroupBoundaries() {
+        for (int precision : new int[] {240, 241, 255, 256, 257, 319, 320, 321, 511, 512, 513, 800, 801, 4096}) {
+            Binary.Format format = new Binary.Format(precision, -400000, 400000);
+            BigInteger top = ONE.shiftLeft(precision - 1);
+            BigInteger guard = ONE.shiftLeft(precision - 238);
+            List<BigInteger> prefixes = List.of(top, top.add(guard), top.add(guard).setBit(precision - 237),
+                    top.add(guard).setBit(precision - 239));
+            int dropped = precision - 239;
+            for (BigInteger prefix : prefixes) {
+                for (int tail : new int[] {-1, 0, Math.min(63, dropped - 1), Math.min(64, dropped - 1), dropped - 1}) {
+                    BigInteger magnitude = tail < 0 ? prefix : prefix.setBit(tail);
+                    for (int exponent : new int[] {-262379, -262378, 0, 262143}) {
+                        for (boolean negative : new boolean[] {false, true}) {
+                            assertForeign(binary(format, negative, magnitude, (long) exponent - precision + 1),
+                                    "source tail precision=" + precision + " tail=" + tail + " exponent=" + exponent + " negative=" + negative);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesForeignNormalAndSubnormalValuesAtEveryGroupAlignment() {
+        Random random = new Random(0x256A116A1E17L);
+        for (int precision = 2; precision <= 1025; precision++) {
+            Binary.Format format = new Binary.Format(precision, -262142, 262143);
+            BigInteger normal = new BigInteger(precision, random).setBit(precision - 1);
+            BigInteger subnormal = new BigInteger(random.nextInt(precision), random);
+            int exponent = switch (precision % 4) {
+                case 0 -> -262142;
+                case 1 -> -1;
+                case 2 -> 0;
+                default -> 262143;
+            };
+            for (boolean negative : new boolean[] {false, true}) {
+                assertForeign(binary(format, negative, normal, (long) exponent - precision + 1),
+                        "normal group alignment precision=" + precision + " negative=" + negative);
+                assertForeign(binary(format, negative, subnormal, -262141L - precision),
+                        "subnormal group alignment precision=" + precision + " negative=" + negative);
+            }
+        }
+    }
+
+    @Test
     void preservesForeignFormatsWithExtremeExponentAndPrecisionParameters() {
         for (int precision : new int[] {2, 237, 800, 65536}) {
             Binary.Format format = new Binary.Format(precision, Integer.MIN_VALUE, Integer.MAX_VALUE);
@@ -548,6 +1457,20 @@ class Binary256CompatibilityTest {
             }
             for (BigInteger value : values) {
                 assertInteger(integer(width, value), "generic Int width=" + width + " bitLength=" + value.bitLength());
+            }
+        }
+    }
+
+    @Test
+    void preservesInt256NegativeMagnitudeCarriesAcrossAllFourWords() {
+        for (int bit : new int[] {0, 1, 19, 44, 45, 63, 64, 65, 127, 128, 191, 192, 236, 237, 238, 254, 255}) {
+            for (int delta = -1; delta <= 1; delta++) {
+                BigInteger magnitude = ONE.shiftLeft(bit).add(BigInteger.valueOf(delta));
+                for (BigInteger value : List.of(magnitude, magnitude.negate())) {
+                    Int256 source = Int256.of(value.shiftRight(192).longValue(), value.shiftRight(128).longValue(),
+                            value.shiftRight(64).longValue(), value.longValue());
+                    assertInteger(source, "Int256 carry boundary bit=" + bit + " delta=" + delta);
+                }
             }
         }
     }

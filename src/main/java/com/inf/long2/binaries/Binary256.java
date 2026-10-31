@@ -4,12 +4,13 @@ import java.util.Objects;
 
 import com.inf.long2.Binary;
 import com.inf.long2.Int;
+import com.inf.long2.ints.Int256;
 
 /**
  * 256-bit 二进制浮点数，以四个 long 按大端序保存原始编码。
  * bit 255 为符号，bit 236 至 bit 254 为 19 位偏置指数，其余 236 位为小数字段。
  * 正常数补入隐含位后具有 237 位精度，指数偏置为 262143。
- * 加减和 FMA 使用精确对齐工作区，极端指数差下单个幅值可能需要约 64 KiB 或 96 KiB 临时空间。
+ * 加减与 FMA 的精确对齐均使用有界工作区，FMA 对齐幅值最多使用 12 个 long，不随指数差扩张。
  */
 public final class Binary256 implements Binary<Binary256> {
     private static final int BIAS = 262143;
@@ -18,6 +19,7 @@ public final class Binary256 implements Binary<Binary256> {
     private static final long HIDDEN_BIT = 0x0000_1000_0000_0000L;
     private static final long INFINITY_TOP = 0x7fff_f000_0000_0000L;
     private static final long NAN_TOP = 0x7fff_f800_0000_0000L;
+    private static final int FMA_ALIGNMENT_WORDS = 12;
 
     /**
      * 237 位有效数字，正常指数范围为 -262142 至 262143。
@@ -120,7 +122,7 @@ public final class Binary256 implements Binary<Binary256> {
      */
     public static Binary256 of(long value) {
         // Long.MIN_VALUE 取负后的位模式仍是正确的无符号幅值。
-        return fromDyadic(value < 0, UnsignedWords.trim(new long[] {value < 0 ? -value : value}), 0);
+        return fromUnsignedLong(value < 0, value < 0 ? -value : value, 0);
     }
 
     /**
@@ -150,7 +152,19 @@ public final class Binary256 implements Binary<Binary256> {
         }
         long magnitude = exponent == 0 ? fraction : fraction | (1L << fractionBits);
         long scale = (exponent == 0 ? 1L : exponent) - bias - fractionBits;
-        return fromDyadic(negative, UnsignedWords.trim(new long[] {magnitude}), scale);
+        return fromUnsignedLong(negative, magnitude, scale);
+    }
+
+    /** 原始无符号 long 幅值的精确扩展，调用方保证非零值落在 Binary256 的正常范围内。 */
+    private static Binary256 fromUnsignedLong(boolean negative, long magnitude, long scale) {
+        if (magnitude == 0) {
+            return zero(negative);
+        }
+        int length = 64 - Long.numberOfLeadingZeros(magnitude);
+        long top = length <= 45 ? magnitude << (45 - length) : magnitude >>> (length - 45);
+        long next = length <= 45 ? 0 : magnitude << (109 - length);
+        long encoded = scale + length - 1 + BIAS;
+        return new Binary256((negative ? Long.MIN_VALUE : 0) | (encoded << 44) | (top & FRACTION_MASK), next, 0, 0);
     }
 
     /**
@@ -160,19 +174,53 @@ public final class Binary256 implements Binary<Binary256> {
      */
     public static Binary256 of(Int<?> value) {
         Objects.requireNonNull(value);
+        if (value instanceof Int256 fixed) {
+            return fromInt256(fixed);
+        }
         boolean negative = value.isNegative();
         Int<?> magnitude = negative ? value.negate() : value;
         long length = (long) magnitude.bitLength() + (magnitude.isNegative() ? 1 : 0);
         if (length > FORMAT.maxExponent() + 1L) {
             return infinity(negative);
         }
-        long[] words = new long[(int) ((length + 63) / 64)];
-        for (int i = 0; i < length; i++) {
-            if (magnitude.testBit(i)) {
+        int kept = (int) Math.min(length, 239);
+        int dropped = (int) (length - kept);
+        long[] words = new long[(kept + 63) / 64];
+        int ones = 0;
+        for (int i = 0; i < kept; i++) {
+            if (magnitude.testBit(dropped + i)) {
                 words[i / 64] |= 1L << (i & 63);
+                ones++;
             }
         }
-        return fromDyadic(negative, UnsignedWords.trim(words), 0);
+        // 整数不会下溢；高 239 位恰为偶数一侧中点时，完整 bitCount 才影响舍入方向。
+        if (dropped != 0 && (words[0] & 7) == 2 && magnitude.bitCount() > ones) {
+            words[0] |= 1;
+        }
+        return fromDyadic(negative, words, dropped);
+    }
+
+    private static Binary256 fromInt256(Int256 value) {
+        boolean negative = value.isNegative();
+        long m0 = value.getLong(0), m1 = value.getLong(1), m2 = value.getLong(2), m3 = value.getLong(3);
+        if (negative) {
+            // 低组全零时继续传播补码取负的进位，最小负数也得到正确的无符号幅值。
+            m3 = -m3;
+            m2 = ~m2 + (m3 == 0 ? 1 : 0);
+            m1 = ~m1 + ((m3 | m2) == 0 ? 1 : 0);
+            m0 = ~m0 + ((m3 | m2 | m1) == 0 ? 1 : 0);
+        }
+        if ((m0 | m1 | m2) == 0) {
+            return fromUnsignedLong(negative, m3, 0);
+        }
+        int discarded = bitLength(m3, m2, m1, m0) - 237;
+        long low = shiftedWord(m3, m2, m1, m0, 0, discarded);
+        // 整数幅值最多 256 位，舍弃部分最多 19 位，guard 与 sticky 均在最低分组内。
+        boolean increment = discarded > 0 && (m3 & (1L << (discarded - 1))) != 0
+                && ((low & 1) != 0 || (m3 & ((1L << (discarded - 1)) - 1)) != 0);
+        return packRounded(negative, low, shiftedWord(m3, m2, m1, m0, 1, discarded),
+                shiftedWord(m3, m2, m1, m0, 2, discarded), shiftedWord(m3, m2, m1, m0, 3, discarded),
+                discarded, increment);
     }
 
     /**
@@ -195,14 +243,30 @@ public final class Binary256 implements Binary<Binary256> {
         if (value instanceof Binary256 same) {
             return same;
         }
-        int groups = (int) ((value.format().precision() + 63L) / 64);
+        Format sourceFormat = value.format();
+        int precision = sourceFormat.precision();
+        long scale = value.scaleExponent();
+        long maximumExponent = scale + precision - 1L;
+        if (maximumExponent < QMIN - 1L) {
+            return zero(negative);
+        }
+        // 次正规源的 scale+p-1 等于 emin，且 emin 不大于零；越过目标上界时源必为正常数。
+        if (maximumExponent > FORMAT.maxExponent()) {
+            return infinity(negative);
+        }
+        int groups = (int) ((precision + 63L) / 64);
+        long guard = QMIN - 1L - scale;
+        int lastLeadingGroup = guard > 0 ? groups - 1 - (int) (guard / 64) : groups - 1;
         int first = 0;
         long top;
         do {
             top = value.getSignificandLong(first++);
+            // 半个 MIN_VALUE 对应 bit 及以上均为零时，更低分组不能改变舍入为零的结果。
+            if (top == 0 && first > lastLeadingGroup) {
+                return zero(negative);
+            }
         } while (top == 0 && first < groups);
         long length = (groups - (long) first) * 64 + 64 - Long.numberOfLeadingZeros(top);
-        long scale = value.scaleExponent();
         long exponent = scale + length - 1;
         if (exponent > FORMAT.maxExponent()) {
             return infinity(negative);
@@ -213,25 +277,36 @@ public final class Binary256 implements Binary<Binary256> {
         int kept = (int) Math.min(length, 239);
         long dropped = length - kept;
         long[] magnitude = new long[(kept + 63) / 64];
-        for (int i = 0; i < kept; i++) {
-            long bit = dropped + i;
-            long word = value.getSignificandLong(groups - 1 - (int) (bit / 64));
-            if ((word & (1L << (bit & 63))) != 0) {
-                magnitude[i / 64] |= 1L << (i & 63);
+        int last = groups - 1 - (int) (dropped / 64);
+        long lastWord = top;
+        for (int index = first - 1; index <= last; index++) {
+            long word = index == first - 1 ? top : value.getSignificandLong(index);
+            lastWord = word;
+            long offset = (groups - 1L - index) * 64 - dropped;
+            if (offset < 0) {
+                magnitude[0] |= word >>> (int) -offset;
+            } else {
+                int group = (int) (offset / 64);
+                int shift = (int) (offset & 63);
+                magnitude[group] |= word << shift;
+                if (shift != 0 && group + 1 < magnitude.length) {
+                    magnitude[group + 1] |= word >>> (64 - shift);
+                }
             }
         }
-        // 保留两位舍入余量后，把更低的非零尾项并入最低位；该位始终低于最终 guard。
-        boolean sticky = false;
-        int whole = (int) (dropped / 64);
-        for (int i = 0; i < whole && !sticky; i++) {
-            sticky = value.getSignificandLong(groups - 1 - i) != 0;
-        }
-        int partial = (int) (dropped & 63);
-        if (!sticky && partial != 0) {
-            sticky = (value.getSignificandLong(groups - 1 - whole) & ((1L << partial) - 1)) != 0;
-        }
-        if (sticky) {
-            magnitude[0] |= 1;
+        long discarded = Math.max(exponent - 236, QMIN) - scale - dropped;
+        // 只有已保留部分恰为偶数一侧的中点，才需读取更低尾项；其他情况的舍入方向已经确定。
+        if (dropped != 0 && UnsignedWords.bit(magnitude, discarded - 1)
+                && !UnsignedWords.bit(magnitude, discarded) && !UnsignedWords.anyLow(magnitude, discarded - 1)) {
+            int partial = (int) (dropped & 63);
+            boolean sticky = partial != 0 && (lastWord & ((1L << partial) - 1)) != 0;
+            for (int index = groups - 1; index > last && !sticky; index--) {
+                sticky = value.getSignificandLong(index) != 0;
+            }
+            if (sticky) {
+                // 两位舍入余量保证最低位低于最终 guard。
+                magnitude[0] |= 1;
+            }
         }
         return fromDyadic(negative, magnitude, scale + dropped);
     }
@@ -313,6 +388,100 @@ public final class Binary256 implements Binary<Binary256> {
         return UnsignedWords.trim(new long[] {l3, l2, l1, getSignificandLong(0)});
     }
 
+    /** 内部按低位分组读取有限幅值，超出四个分组的部分补零。 */
+    private long magnitudeWord(int index) {
+        return switch (index) {
+            case 0 -> l3;
+            case 1 -> l2;
+            case 2 -> l1;
+            case 3 -> (l0 & FRACTION_MASK) | (encodedExponent() == 0 ? 0 : HIDDEN_BIT);
+            default -> 0;
+        };
+    }
+
+    /** 调用方保证值为有限非零数，次正规数按最高非零 bit 计算实际指数。 */
+    private int magnitudeExponent() {
+        int encoded = encodedExponent();
+        if (encoded != 0) {
+            return encoded - BIAS;
+        }
+        long top = l0 & FRACTION_MASK;
+        int length = top != 0 ? 256 - Long.numberOfLeadingZeros(top)
+                : l1 != 0 ? 192 - Long.numberOfLeadingZeros(l1)
+                : l2 != 0 ? 128 - Long.numberOfLeadingZeros(l2) : 64 - Long.numberOfLeadingZeros(l3);
+        return QMIN + length - 1;
+    }
+
+    /** 有限非零值为二次幂时返回其指数，否则返回 Integer.MIN_VALUE。 */
+    private int powerOfTwoExponent() {
+        int encoded = encodedExponent();
+        if (encoded != 0) {
+            return emptyFraction() ? encoded - BIAS : Integer.MIN_VALUE;
+        }
+        for (int group = 0; group < 4; group++) {
+            long word = magnitudeWord(group);
+            if (word != 0) {
+                if ((word & (word - 1)) != 0) {
+                    return Integer.MIN_VALUE;
+                }
+                for (int higher = group + 1; higher < 4; higher++) {
+                    if (magnitudeWord(higher) != 0) {
+                        return Integer.MIN_VALUE;
+                    }
+                }
+                return QMIN + group * 64 + Long.numberOfTrailingZeros(word);
+            }
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    /** 两值均为有限非零数；只调整比较位权，不对接收值执行浮点舍入。 */
+    private int compareScaledMagnitude(Binary256 other, int scale) {
+        int exponent = magnitudeExponent(), otherExponent = other.magnitudeExponent();
+        int comparison = Integer.compare(exponent + scale, otherExponent);
+        if (comparison != 0) {
+            return comparison;
+        }
+        int shift = (int) (236 - exponent + scaleExponent());
+        int otherShift = (int) (236 - otherExponent + other.scaleExponent());
+        for (int group = 3; group >= 0; group--) {
+            comparison = Long.compareUnsigned(alignedMagnitudeWord(group, shift), other.alignedMagnitudeWord(group, otherShift));
+            if (comparison != 0) {
+                return comparison;
+            }
+        }
+        return 0;
+    }
+
+    private long alignedMagnitudeWord(int group, int shift) {
+        int whole = shift >>> 6, bits = shift & 63;
+        long word = magnitudeWord(group - whole) << bits;
+        return bits == 0 ? word : word | (magnitudeWord(group - whole - 1) >>> (64 - bits));
+    }
+
+    /** 返回有限幅值右移后的低 64 位，distance 不小于零。 */
+    private long shiftedMagnitude(int distance) {
+        int group = distance >>> 6;
+        int bits = distance & 63;
+        long result = magnitudeWord(group) >>> bits;
+        return bits == 0 ? result : result | (magnitudeWord(group + 1) << (64 - bits));
+    }
+
+    private boolean magnitudeBit(int index) {
+        return (magnitudeWord(index >>> 6) & (1L << (index & 63))) != 0;
+    }
+
+    private boolean anyLowMagnitude(int count) {
+        int whole = count >>> 6;
+        for (int i = 0; i < whole; i++) {
+            if (magnitudeWord(i) != 0) {
+                return true;
+            }
+        }
+        int bits = count & 63;
+        return bits != 0 && (magnitudeWord(whole) & ((1L << bits) - 1)) != 0;
+    }
+
     private static Binary256 zero(boolean negative) {
         return negative ? NEGATIVE_ZERO : ZERO;
     }
@@ -321,105 +490,174 @@ public final class Binary256 implements Binary<Binary256> {
         return negative ? NEGATIVE_INFINITY : POSITIVE_INFINITY;
     }
 
-    private record Rounded(long[] magnitude, long scale, boolean infinite) {
-    }
-
     /** 最终位权同时考虑精度和次正规下界，只在该位权上舍入一次。 */
-    private static Rounded roundDyadic(long[] magnitude, long scale, int precision, int emin, int emax) {
-        int length = UnsignedWords.bitLength(magnitude);
-        if (length == 0) {
-            return new Rounded(new long[0], 0, false);
-        }
-        long exponent = scale + length - 1;
-        long minimumScale = (long) emin - precision + 1;
-        if (exponent > emax) {
-            return new Rounded(new long[0], 0, true);
-        }
-        if (exponent < minimumScale - 1) {
-            return new Rounded(new long[0], 0, false);
-        }
-        long quantum = Math.max(exponent - precision + 1, minimumScale);
-        long discarded = quantum - scale;
-        long[] result;
-        if (discarded > 0) {
-            result = UnsignedWords.right(magnitude, discarded);
-            if (UnsignedWords.bit(magnitude, discarded - 1)
-                    && (UnsignedWords.anyLow(magnitude, discarded - 1) || UnsignedWords.bit(result, 0))) {
-                result = UnsignedWords.add(result, new long[] {1});
-            }
-        } else {
-            result = UnsignedWords.left(magnitude, Math.toIntExact(-discarded));
-        }
-        return finish(result, quantum, precision, emax);
-    }
-
-    private static Rounded finish(long[] magnitude, long scale, int precision, int emax) {
-        if (UnsignedWords.bitLength(magnitude) > precision) {
-            magnitude = UnsignedWords.right(magnitude, 1);
-            scale++;
-        }
-        boolean infinite = magnitude.length != 0 && scale + UnsignedWords.bitLength(magnitude) - 1 > emax;
-        return new Rounded(magnitude, scale, infinite);
-    }
-
     private static Binary256 fromDyadic(boolean negative, long[] magnitude, long scale) {
-        return pack(negative, roundDyadic(magnitude, scale, 237, -262142, 262143));
-    }
-
-    private static Binary256 pack(boolean negative, Rounded rounded) {
-        if (rounded.infinite()) {
-            return infinity(negative);
-        }
-        long[] magnitude = rounded.magnitude();
         int length = UnsignedWords.bitLength(magnitude);
         if (length == 0) {
             return zero(negative);
         }
-        long exponent = rounded.scale() + length - 1;
-        long encoded = exponent < FORMAT.minExponent() ? 0 : exponent + BIAS;
-        return new Binary256((negative ? Long.MIN_VALUE : 0) | (encoded << 44)
-                | (UnsignedWords.word(magnitude, 3) & FRACTION_MASK),
-                UnsignedWords.word(magnitude, 2), UnsignedWords.word(magnitude, 1), UnsignedWords.word(magnitude, 0));
+        long exponent = scale + length - 1;
+        if (exponent > FORMAT.maxExponent()) {
+            return infinity(negative);
+        }
+        if (exponent < QMIN - 1L) {
+            return zero(negative);
+        }
+        long quantum = Math.max(exponent - 236, QMIN);
+        int discarded = Math.toIntExact(quantum - scale);
+        long low = shiftedWord(magnitude, 0, discarded);
+        boolean increment = discarded > 0 && UnsignedWords.bit(magnitude, discarded - 1)
+                && ((low & 1) != 0 || UnsignedWords.anyLow(magnitude, discarded - 1));
+        return packRounded(negative, low, shiftedWord(magnitude, 1, discarded),
+                shiftedWord(magnitude, 2, discarded), shiftedWord(magnitude, 3, discarded), quantum, increment);
     }
 
-    private static Binary256 sum(boolean an, long[] a, long as, boolean bn, long[] b, long bs) {
-        if (a.length == 0 && b.length == 0) {
-            return zero(an && bn);
+    /** distance 为正时右移，为负时左移；幅值保持只读，范围外的分组补零。 */
+    private static long shiftedWord(long[] magnitude, int index, int distance) {
+        int group = index + (distance >> 6), bits = distance & 63;
+        long low = group < 0 ? 0 : UnsignedWords.word(magnitude, group);
+        if (bits == 0) {
+            return low;
         }
-        if (a.length == 0) {
-            return fromDyadic(bn, b, bs);
+        long high = group < -1 ? 0 : UnsignedWords.word(magnitude, group + 1);
+        return (low >>> bits) | (high << (64 - bits));
+    }
+
+    private static long shiftedWord(long w0, long w1, long w2, long w3, int index, int distance) {
+        int group = index + (distance >> 6), bits = distance & 63;
+        long low = fourWord(w0, w1, w2, w3, group);
+        return bits == 0 ? low : (low >>> bits) | (fourWord(w0, w1, w2, w3, group + 1) << (64 - bits));
+    }
+
+    private static long fourWord(long w0, long w1, long w2, long w3, int index) {
+        return switch (index) {
+            case 0 -> w0;
+            case 1 -> w1;
+            case 2 -> w2;
+            case 3 -> w3;
+            default -> 0;
+        };
+    }
+
+    private static int bitLength(long w0, long w1, long w2, long w3) {
+        return w3 != 0 ? 256 - Long.numberOfLeadingZeros(w3)
+                : w2 != 0 ? 192 - Long.numberOfLeadingZeros(w2)
+                : w1 != 0 ? 128 - Long.numberOfLeadingZeros(w1) : 64 - Long.numberOfLeadingZeros(w0);
+    }
+
+    /** 幅值最多 237 位；increment 表示最终舍入加一，额外进位归一化后再判断上溢。 */
+    private static Binary256 packRounded(boolean negative, long w0, long w1, long w2, long w3,
+            long scale, boolean increment) {
+        if (increment && ++w0 == 0 && ++w1 == 0 && ++w2 == 0) {
+            w3++;
         }
-        if (b.length == 0) {
-            return fromDyadic(an, a, as);
+        if ((w3 & (HIDDEN_BIT << 1)) != 0) {
+            w0 = (w0 >>> 1) | (w1 << 63);
+            w1 = (w1 >>> 1) | (w2 << 63);
+            w2 = (w2 >>> 1) | (w3 << 63);
+            w3 >>>= 1;
+            scale++;
         }
-        long scale = Math.min(as, bs);
-        a = UnsignedWords.left(a, Math.toIntExact(as - scale));
-        b = UnsignedWords.left(b, Math.toIntExact(bs - scale));
-        if (an == bn) {
-            return fromDyadic(an, UnsignedWords.add(a, b), scale);
+        int length = bitLength(w0, w1, w2, w3);
+        if (length == 0) {
+            return zero(negative);
         }
-        int comparison = UnsignedWords.compare(a, b);
-        return comparison == 0 ? ZERO : comparison > 0
-                ? fromDyadic(an, UnsignedWords.subtract(a, b), scale)
-                : fromDyadic(bn, UnsignedWords.subtract(b, a), scale);
+        long exponent = scale + length - 1;
+        if (exponent > FORMAT.maxExponent()) {
+            return infinity(negative);
+        }
+        long encoded = exponent < FORMAT.minExponent() ? 0 : exponent + BIAS;
+        return new Binary256((negative ? Long.MIN_VALUE : 0) | (encoded << 44)
+                | (w3 & FRACTION_MASK), w2, w1, w0);
     }
 
     @Override
     public Binary256 add(Binary256 other) {
-        Objects.requireNonNull(other);
-        if (isNaN() || other.isNaN()) {
-            return NaN;
-        }
-        if (isInfinite() || other.isInfinite()) {
-            return isInfinite() && other.isInfinite() && signBit() != other.signBit()
-                    ? NaN : isInfinite() ? this : other;
-        }
-        return sum(signBit(), magnitude(), scaleExponent(), other.signBit(), other.magnitude(), other.scaleExponent());
+        return add(other, false);
     }
 
     @Override
     public Binary256 subtract(Binary256 other) {
-        return add(Objects.requireNonNull(other).negate());
+        return add(other, true);
+    }
+
+    private Binary256 add(Binary256 other, boolean subtract) {
+        Objects.requireNonNull(other);
+        if (isNaN() || other.isNaN()) {
+            return NaN;
+        }
+        boolean negative = signBit();
+        boolean otherNegative = other.signBit() ^ subtract;
+        if (isInfinite() || other.isInfinite()) {
+            return isInfinite() && other.isInfinite() && negative != otherNegative
+                    ? NaN : isInfinite() ? this : infinity(otherNegative);
+        }
+        if (isZero()) {
+            return other.isZero() ? zero(negative && otherNegative) : subtract ? other.negate() : other;
+        }
+        if (other.isZero()) {
+            return this;
+        }
+        // 两项均已按 237 位编码；指数差至少 239 时，小项严格小于较大值两侧舍入边界的距离。
+        int difference = magnitudeExponent() - other.magnitudeExponent();
+        if (difference >= 239) {
+            return this;
+        }
+        if (difference <= -239) {
+            return subtract ? other.negate() : other;
+        }
+        return sumFinite(other, negative, otherNegative);
+    }
+
+    /** 有限非零输入的实际指数差小于 239，完整对齐和连同进位最多需要 476 位。 */
+    private Binary256 sumFinite(Binary256 other, boolean negative, boolean otherNegative) {
+        boolean subtract = negative != otherNegative;
+        int comparison = subtract ? compareScaledMagnitude(other, 0) : 1;
+        if (comparison == 0) {
+            return ZERO;
+        }
+        Binary256 a = comparison > 0 ? this : other, b = comparison > 0 ? other : this;
+        long as = a.scaleExponent(), bs = b.scaleExponent(), scale = Math.min(as, bs);
+        int ashift = (int) (as - scale), bshift = (int) (bs - scale);
+        long[] result = new long[8];
+        long carry = 0;
+        for (int i = 0; i < result.length; i++) {
+            long av = a.alignedMagnitudeWord(i, ashift), bv = b.alignedMagnitudeWord(i, bshift);
+            if (subtract) {
+                long difference = av - bv;
+                result[i] = difference - carry;
+                carry = Long.compareUnsigned(av, bv) < 0 || Long.compareUnsigned(difference, carry) < 0 ? 1 : 0;
+            } else {
+                long sum = av + bv;
+                long next = sum + carry;
+                carry = Long.compareUnsigned(sum, av) < 0 || Long.compareUnsigned(next, sum) < 0 ? 1 : 0;
+                result[i] = next;
+            }
+        }
+        return fromDyadic(comparison > 0 ? negative : otherNegative, result, scale);
+    }
+
+    /** 两值均为有限非零数，直接读取字段并保留完整乘积，结果工作区由本次调用独占。 */
+    private long[] multiplyMagnitude(Binary256 other) {
+        long atop = magnitudeWord(3), btop = other.magnitudeWord(3);
+        int alength = (bitLength(l3, l2, l1, atop) + 63) / 64;
+        int blength = (bitLength(other.l3, other.l2, other.l1, btop) + 63) / 64;
+        long[] result = new long[alength + blength];
+        for (int i = 0; i < alength; i++) {
+            long av = fourWord(l3, l2, l1, atop, i), carry = 0;
+            for (int j = 0; j < blength; j++) {
+                long bv = fourWord(other.l3, other.l2, other.l1, btop, j);
+                long low = av * bv, high = Math.unsignedMultiplyHigh(av, bv);
+                long sum = low + result[i + j];
+                high += Long.compareUnsigned(sum, low) < 0 ? 1 : 0;
+                long next = sum + carry;
+                high += Long.compareUnsigned(next, sum) < 0 ? 1 : 0;
+                result[i + j] = next;
+                carry = high;
+            }
+            result[i + blength] = carry;
+        }
+        return result;
     }
 
     @Override
@@ -432,7 +670,26 @@ public final class Binary256 implements Binary<Binary256> {
         if (isInfinite() || other.isInfinite()) {
             return infinity(negative);
         }
-        return fromDyadic(negative, UnsignedWords.multiply(magnitude(), other.magnitude()),
+        if (isZero() || other.isZero()) {
+            return zero(negative);
+        }
+        int minimumExponent = magnitudeExponent() + other.magnitudeExponent();
+        // 精确积位于 [2^S, 2^(S+2))，只在整个区间都越过舍入边界时提前返回。
+        if (minimumExponent >= FORMAT.maxExponent() + 1) {
+            return infinity(negative);
+        }
+        if (minimumExponent <= QMIN - 3) {
+            return zero(negative);
+        }
+        int power = other.powerOfTwoExponent();
+        if (power != Integer.MIN_VALUE) {
+            return scalbFinite(power, negative);
+        }
+        power = powerOfTwoExponent();
+        if (power != Integer.MIN_VALUE) {
+            return other.scalbFinite(power, negative);
+        }
+        return fromDyadic(negative, multiplyMagnitude(other),
                 scaleExponent() + other.scaleExponent());
     }
 
@@ -474,10 +731,9 @@ public final class Binary256 implements Binary<Binary256> {
         UnsignedWords.Division division = UnsignedWords.divide(a, b);
         long[] result = division.quotient();
         int half = UnsignedWords.compare(UnsignedWords.left(division.remainder(), 1), b);
-        if (half > 0 || (half == 0 && UnsignedWords.bit(result, 0))) {
-            result = UnsignedWords.add(result, new long[] {1});
-        }
-        return pack(negative, finish(result, quantum, 237, FORMAT.maxExponent()));
+        return packRounded(negative, UnsignedWords.word(result, 0), UnsignedWords.word(result, 1),
+                UnsignedWords.word(result, 2), UnsignedWords.word(result, 3), quantum,
+                half > 0 || (half == 0 && UnsignedWords.bit(result, 0)));
     }
 
     @Override
@@ -498,32 +754,51 @@ public final class Binary256 implements Binary<Binary256> {
         if (isZero() || other.isInfinite()) {
             return this;
         }
+        int comparison = compareScaledMagnitude(other, nearest ? 1 : 0);
+        if (nearest ? comparison <= 0 : comparison < 0) {
+            return this;
+        }
         long[] a = magnitude(), b = other.magnitude(), remainder;
         long difference = scaleExponent() - other.scaleExponent();
         long scale;
         boolean odd;
         if (difference >= 0) {
-            long[] modulus = UnsignedWords.left(b, 1);
-            long[] power = UnsignedWords.powerOfTwoMod(difference, modulus);
-            long[] reduced = UnsignedWords.divide(UnsignedWords.multiply(a, power), modulus).remainder();
-            odd = UnsignedWords.compare(reduced, b) >= 0;
+            int divisorPower = other.powerOfTwoExponent();
+            int modulusBits = divisorPower == Integer.MIN_VALUE ? -1 : (int) (divisorPower - other.scaleExponent()) + (nearest ? 1 : 0);
+            if (modulusBits >= 0 && difference >= modulusBits) {
+                return zero(signBit());
+            }
+            long[] modulus = nearest ? UnsignedWords.left(b, 1) : b;
+            long[] reduced;
+            if (modulusBits >= 0) {
+                reduced = UnsignedWords.left(UnsignedWords.lowBits(a, modulusBits - (int) difference), (int) difference);
+            } else if (difference <= 237) {
+                // 对齐后的被除数不超过 474 位，可直接求余而无须模重复平方。
+                reduced = UnsignedWords.remainder(UnsignedWords.left(a, (int) difference), modulus);
+            } else {
+                long[] power = UnsignedWords.powerOfTwoMod(difference, modulus);
+                reduced = UnsignedWords.remainder(UnsignedWords.multiply(a, power), modulus);
+            }
+            odd = nearest && UnsignedWords.compare(reduced, b) >= 0;
             remainder = odd ? UnsignedWords.subtract(reduced, b) : reduced;
             scale = other.scaleExponent();
         } else {
-            if (UnsignedWords.bitLength(b) - difference > UnsignedWords.bitLength(a) + 1L) {
+            // 位权较大的除数必为正常数，对齐后大于被除数，向零截断的整数商为零。
+            if (!nearest || UnsignedWords.bitLength(b) - difference > UnsignedWords.bitLength(a) + 1L) {
                 return this;
             }
             b = UnsignedWords.left(b, Math.toIntExact(-difference));
-            UnsignedWords.Division division = UnsignedWords.divide(a, b);
-            remainder = division.remainder();
-            odd = UnsignedWords.bit(division.quotient(), 0);
+            remainder = a;
+            odd = false;
             scale = scaleExponent();
         }
         boolean negative = signBit();
-        int half = UnsignedWords.compare(UnsignedWords.left(remainder, 1), b);
-        if (nearest && (half > 0 || (half == 0 && odd))) {
-            remainder = UnsignedWords.subtract(b, remainder);
-            negative = !negative;
+        if (nearest) {
+            int half = UnsignedWords.compare(UnsignedWords.left(remainder, 1), b);
+            if (half > 0 || (half == 0 && odd)) {
+                remainder = UnsignedWords.subtract(b, remainder);
+                negative = !negative;
+            }
         }
         return fromDyadic(negative, remainder, scale);
     }
@@ -553,10 +828,103 @@ public final class Binary256 implements Binary<Binary256> {
         if (addend.isInfinite()) {
             return addend;
         }
-        // 不对乘积提前编码，保留中间溢出后仍可被加数取消的全部有效位。
-        return sum(negative, UnsignedWords.multiply(magnitude(), multiplier.magnitude()),
-                scaleExponent() + multiplier.scaleExponent(),
-                addend.signBit(), addend.magnitude(), addend.scaleExponent());
+        if ((multiplier.l0 & Long.MAX_VALUE) == ONE.l0 && (multiplier.l1 | multiplier.l2 | multiplier.l3) == 0) {
+            return multiplier.signBit() ? addend.subtract(this) : add(addend);
+        }
+        return fmaFinite(multiplier, addend, negative);
+    }
+
+    private Binary256 fmaFinite(Binary256 multiplier, Binary256 addend, boolean negative) {
+        if (isZero() || multiplier.isZero()) {
+            return addend.isZero() ? zero(negative && addend.signBit()) : addend;
+        }
+        int minimumProductExponent = magnitudeExponent() + multiplier.magnitudeExponent();
+        // 乘积至少为 2^(emax+2) 时，任何有限加数都不足以将结果抵消回有限范围。
+        if (minimumProductExponent >= FORMAT.maxExponent() + 2) {
+            return infinity(negative);
+        }
+        boolean addendZero = addend.isZero();
+        int addendExponent = addendZero ? 0 : addend.magnitudeExponent();
+        // 精确乘积的实际指数最多比两个输入指数之和大一，先用此上界省去无关乘积的构造。
+        if (!addendZero && addendExponent - minimumProductExponent - 1 >= 239) {
+            return addend;
+        }
+        long[] product = multiplyMagnitude(multiplier);
+        long productScale = scaleExponent() + multiplier.scaleExponent();
+        long productExponent = productScale + UnsignedWords.bitLength(product) - 1;
+        if (productExponent >= FORMAT.maxExponent() + 2L) {
+            return infinity(negative);
+        }
+        if (addendZero) {
+            return fromDyadic(negative, product, productScale);
+        }
+        long difference = productExponent - addendExponent;
+        if (difference <= -239) {
+            return addend;
+        }
+        if (difference >= 475) {
+            return roundProductWithTail(negative, product, productScale, productExponent, negative == addend.signBit());
+        }
+        return sumFma(negative, product, productScale, productExponent, addend, addendExponent);
+    }
+
+    private static Binary256 roundProductWithTail(boolean negative, long[] product, long scale, long exponent,
+            boolean magnitudeIncreases) {
+        if (exponent > FORMAT.maxExponent()) {
+            return infinity(negative);
+        }
+        // 加数非零且指数至少低 475，乘积必为正常范围；其与非中点舍入边界的距离大于尾项。
+        int discarded = UnsignedWords.bitLength(product) - 237;
+        if (discarded > 0 && UnsignedWords.bit(product, discarded - 1) && !UnsignedWords.anyLow(product, discarded - 1)) {
+            // 精确中点处，尾项使绝对值增大就选上界，减小就选下界，不再按保留位奇偶处理。
+            return packRounded(negative, shiftedWord(product, 0, discarded), shiftedWord(product, 1, discarded),
+                    shiftedWord(product, 2, discarded), shiftedWord(product, 3, discarded), scale + discarded, magnitudeIncreases);
+        }
+        return fromDyadic(negative, product, scale);
+    }
+
+    private static Binary256 sumFma(boolean negative, long[] product, long productScale, long productExponent,
+            Binary256 addend, int addendExponent) {
+        long addendScale = addend.scaleExponent();
+        long scale = Math.min(productScale, addendScale);
+        // 乘积最多 474 位、加数最多 237 位；两个方向的指数差分别小于 475 和 239，连同进位最多 713 位。
+        long span = Math.max(productExponent, addendExponent) - scale + 1;
+        int capacity = span < 512 ? 8 : FMA_ALIGNMENT_WORDS;
+        int productShift = Math.toIntExact(productScale - scale), addendShift = Math.toIntExact(addendScale - scale);
+        boolean subtract = negative != addend.signBit();
+        int comparison = 1;
+        if (subtract) {
+            comparison = Long.compare(productExponent, addendExponent);
+            if (comparison == 0) {
+                for (int i = capacity - 1; i >= 0; i--) {
+                    comparison = Long.compareUnsigned(shiftedWord(product, i, -productShift), addend.alignedMagnitudeWord(i, addendShift));
+                    if (comparison != 0) {
+                        break;
+                    }
+                }
+                if (comparison == 0) {
+                    return ZERO;
+                }
+            }
+        }
+        // 仅在乘积不移位时复用其数组；按低组写入后，不会覆盖后续仍需读取的乘积分组。
+        long[] result = productShift == 0 && product.length == capacity ? product : new long[capacity];
+        long carry = 0;
+        for (int i = 0; i < capacity; i++) {
+            long av = shiftedWord(product, i, -productShift), bv = addend.alignedMagnitudeWord(i, addendShift);
+            if (subtract) {
+                long greater = comparison > 0 ? av : bv, smaller = comparison > 0 ? bv : av;
+                long difference = greater - smaller;
+                result[i] = difference - carry;
+                carry = Long.compareUnsigned(greater, smaller) < 0 || Long.compareUnsigned(difference, carry) < 0 ? 1 : 0;
+            } else {
+                long sum = av + bv;
+                long next = sum + carry;
+                carry = Long.compareUnsigned(sum, av) < 0 || Long.compareUnsigned(next, sum) < 0 ? 1 : 0;
+                result[i] = next;
+            }
+        }
+        return fromDyadic(comparison > 0 ? negative : addend.signBit(), result, scale);
     }
 
     @Override
@@ -567,21 +935,18 @@ public final class Binary256 implements Binary<Binary256> {
         if (isZero() || isInfinite()) {
             return this;
         }
-        long[] magnitude = magnitude();
-        long scale = scaleExponent();
-        long exponent = Math.floorDiv(scale + UnsignedWords.bitLength(magnitude) - 1, 2);
+        long exponent = Math.floorDiv(magnitudeExponent(), 2);
         long quantum = exponent - 236;
-        long[] radicand = UnsignedWords.left(magnitude, Math.toIntExact(scale - 2 * quantum));
-        UnsignedWords.Root root = UnsignedWords.sqrt(radicand);
+        int shift = Math.toIntExact(scaleExponent() - 2 * quantum);
+        UnsignedWords.Root root = UnsignedWords.sqrtScaled(l3, l2, l1, magnitudeWord(3), shift);
         long[] result = root.value();
-        // 比较 4R 与中点平方等价于比较 4 * remainder 与 4 * root + 1，无须再次计算大平方。
-        int half = UnsignedWords.compare(UnsignedWords.left(root.remainder(), 2),
-                UnsignedWords.add(UnsignedWords.left(result, 2), new long[] {1}));
-        if (half > 0 || (half == 0 && UnsignedWords.bit(result, 0))) {
-            result = UnsignedWords.add(result, new long[] {1});
+        // N = S² + R，中点平方为 S² + S + 1/4；R 为整数，向上舍入恰好等价于 R > S。
+        if (UnsignedWords.compare(root.remainder(), result) > 0) {
+            result = UnsignedWords.incrementInPlace(result);
         }
         // 本格式任意正有限输入的平方根都在正常范围内，整数舍入后的结果可精确编码。
-        return fromDyadic(false, result, quantum);
+        return packRounded(false, UnsignedWords.word(result, 0), UnsignedWords.word(result, 1),
+                UnsignedWords.word(result, 2), UnsignedWords.word(result, 3), quantum, false);
     }
 
     @Override
@@ -592,17 +957,28 @@ public final class Binary256 implements Binary<Binary256> {
         if (isZero() || isInfinite()) {
             return this;
         }
+        return scalbFinite(scaleFactor, signBit());
+    }
+
+    /** 接收值为有限非零数，negative 已包含调用方需要的符号变换。 */
+    private Binary256 scalbFinite(long scaleFactor, boolean negative) {
+        int encoded = encodedExponent();
+        // 先限制增量，再相加，保证全部 long 参数都不会使指数回绕。
+        if (encoded != 0 && scaleFactor >= 1L - encoded && scaleFactor <= 0x7fffeL - encoded) {
+            return new Binary256((negative ? Long.MIN_VALUE : 0) | (l0 & FRACTION_MASK)
+                    | ((encoded + scaleFactor) << 44), l1, l2, l3);
+        }
         long[] magnitude = magnitude();
         long scale = scaleExponent();
         long exponent = scale + UnsignedWords.bitLength(magnitude) - 1;
         // 先与有限的小范围界限比较，避免将 Long.MIN_VALUE 或 Long.MAX_VALUE 直接加到指数上。
         if (scaleFactor > FORMAT.maxExponent() - exponent) {
-            return infinity(signBit());
+            return infinity(negative);
         }
         if (scaleFactor < QMIN - 1L - exponent) {
-            return zero(signBit());
+            return zero(negative);
         }
-        return fromDyadic(signBit(), magnitude, scale + scaleFactor);
+        return fromDyadic(negative, magnitude, scale + scaleFactor);
     }
 
     @Override
@@ -634,11 +1010,19 @@ public final class Binary256 implements Binary<Binary256> {
     }
 
     private Binary256 stepRaw(boolean increment) {
-        long[] raw = {l3, l2, l1, l0};
-        long[] result = increment ? UnsignedWords.add(raw, new long[] {1})
-                : UnsignedWords.subtract(raw, new long[] {1});
-        return new Binary256(UnsignedWords.word(result, 3), UnsignedWords.word(result, 2),
-                UnsignedWords.word(result, 1), UnsignedWords.word(result, 0));
+        long delta = increment ? 1 : -1;
+        long propagated = increment ? 0 : -1;
+        long next3 = l3 + delta, next2 = l2, next1 = l1, next0 = l0;
+        if (next3 == propagated) {
+            next2 += delta;
+            if (next2 == propagated) {
+                next1 += delta;
+                if (next1 == propagated) {
+                    next0 += delta;
+                }
+            }
+        }
+        return new Binary256(next0, next1, next2, next3);
     }
 
     private int compareOrdered(Binary256 other) {
@@ -710,18 +1094,31 @@ public final class Binary256 implements Binary<Binary256> {
         if (isInfinite()) {
             return sign | infinity;
         }
-        Rounded rounded = roundDyadic(magnitude(), scaleExponent(), precision, emin, emax);
-        if (rounded.infinite()) {
+        int exponent = encodedExponent() - BIAS;
+        if (exponent > emax) {
             return sign | infinity;
         }
-        int length = UnsignedWords.bitLength(rounded.magnitude());
-        if (length == 0) {
+        int minimumScale = emin - fractionBits;
+        if (exponent < minimumScale - 1) {
             return sign;
         }
-        long exponent = rounded.scale() + length - 1;
+        // 能在 binary32 或 binary64 中舍入为非零的源值必为 Binary256 正常数。
+        int quantum = Math.max(exponent - fractionBits, minimumScale);
+        int discarded = quantum - exponent + 236;
+        long rounded = shiftedMagnitude(discarded);
+        if (magnitudeBit(discarded - 1) && ((rounded & 1) != 0 || anyLowMagnitude(discarded - 1))) {
+            rounded++;
+        }
+        if (rounded == 0) {
+            return sign;
+        }
+        exponent = quantum + 63 - Long.numberOfLeadingZeros(rounded);
+        if (exponent > emax) {
+            return sign | infinity;
+        }
         long encoded = exponent < emin ? 0 : exponent + emax;
         return sign | (encoded << fractionBits)
-                | (UnsignedWords.word(rounded.magnitude(), 0) & ((1L << fractionBits) - 1));
+                | (rounded & ((1L << fractionBits) - 1));
     }
 
     @Override
@@ -743,18 +1140,14 @@ public final class Binary256 implements Binary<Binary256> {
         if (isInfinite()) {
             return signBit() ? minimum : maximum;
         }
-        long[] magnitude = magnitude();
-        long scale = scaleExponent();
-        long exponent = scale + UnsignedWords.bitLength(magnitude) - 1;
+        int exponent = encodedExponent() - BIAS;
         if (exponent >= width - 1) {
             return signBit() ? minimum : maximum;
         }
-        if (exponent < 0 || magnitude.length == 0) {
+        if (exponent < 0) {
             return 0;
         }
-        long[] integer = scale < 0 ? UnsignedWords.right(magnitude, -scale)
-                : UnsignedWords.left(magnitude, Math.toIntExact(scale));
-        long result = UnsignedWords.word(integer, 0);
+        long result = shiftedMagnitude(236 - exponent);
         return signBit() ? -result : result;
     }
 
