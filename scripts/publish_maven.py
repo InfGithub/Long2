@@ -147,7 +147,7 @@ def main():
     parser.add_argument("--site", type=Path, required=True)
     args = parser.parse_args()
     if not args.tag.startswith("v") or not VERSION_PATTERN.fullmatch(args.tag[1:]):
-        parser.error("Expected a stable release tag such as v0.1.1")
+        parser.error("Expected a stable release tag such as v0.1.2")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
         parser.error("Expected an owner/repository name")
     if not args.site.resolve().is_relative_to(Path.cwd().resolve()):

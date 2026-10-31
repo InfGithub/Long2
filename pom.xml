@@ -5,7 +5,7 @@
 
     <groupId>com.inf.long2</groupId>
     <artifactId>Long2</artifactId>
-    <version>0.1.1</version>
+    <version>0.1.2</version>
     <packaging>jar</packaging>
 
     <name>Long2</name>
