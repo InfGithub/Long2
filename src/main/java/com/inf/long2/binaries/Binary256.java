@@ -512,6 +512,34 @@ public final class Binary256 implements Binary<Binary256> {
                 shiftedWord(magnitude, 2, discarded), shiftedWord(magnitude, 3, discarded), quantum, increment);
     }
 
+    /** 两个低组在前的 long 保存非零完整乘积，不分配幅值数组；次正规边界仍在最终位权上舍入。 */
+    private static Binary256 fromDyadic(boolean negative, long w0, long w1, long scale) {
+        int length = bitLength(w0, w1, 0, 0);
+        long exponent = scale + length - 1;
+        if (exponent > FORMAT.maxExponent()) {
+            return infinity(negative);
+        }
+        if (exponent < QMIN - 1L) {
+            return zero(negative);
+        }
+        long quantum = Math.max(exponent - 236, QMIN);
+        int discarded = Math.toIntExact(quantum - scale);
+        long low = shiftedWord(w0, w1, 0, 0, 0, discarded);
+        boolean increment = false;
+        if (discarded > 0) {
+            int guard = discarded - 1;
+            long word = guard < 64 ? w0 : w1;
+            if ((word & (1L << (guard & 63))) != 0) {
+                // 已排除低于半个 MIN_VALUE 的输入，guard 不超过 127；两侧掩码的移位均小于 64。
+                increment = (low & 1) != 0 || (guard < 64
+                        ? (w0 & ((1L << guard) - 1)) != 0
+                        : w0 != 0 || (w1 & ((1L << (guard - 64)) - 1)) != 0);
+            }
+        }
+        return packRounded(negative, low, shiftedWord(w0, w1, 0, 0, 1, discarded),
+                shiftedWord(w0, w1, 0, 0, 2, discarded), shiftedWord(w0, w1, 0, 0, 3, discarded), quantum, increment);
+    }
+
     /** distance 为正时右移，为负时左移；幅值保持只读，范围外的分组补零。 */
     private static long shiftedWord(long[] magnitude, int index, int distance) {
         int group = index + (distance >> 6), bits = distance & 63;
@@ -642,11 +670,20 @@ public final class Binary256 implements Binary<Binary256> {
         long atop = magnitudeWord(3), btop = other.magnitudeWord(3);
         int alength = (bitLength(l3, l2, l1, atop) + 63) / 64;
         int blength = (bitLength(other.l3, other.l2, other.l1, btop) + 63) / 64;
+        return multiplyMagnitude(l3, l2, l1, atop, alength, other.l3, other.l2, other.l1, btop, blength);
+    }
+
+    /** 输入分组低组在前，结果保留指定容量供 FMA 对齐时复用；位权由调用方随幅值调整。 */
+    private static long[] multiplyMagnitude(long a0, long a1, long a2, long a3, int alength,
+            long b0, long b1, long b2, long b3, int blength) {
+        int astart = a0 != 0 ? 0 : a1 != 0 ? 1 : a2 != 0 ? 2 : 3;
+        int bstart = b0 != 0 ? 0 : b1 != 0 ? 1 : b2 != 0 ? 2 : 3;
+        // 低零组保留原有位权和结果容量；每行跳过的低零组不产生进位，后续零组仍须传播进位。
         long[] result = new long[alength + blength];
-        for (int i = 0; i < alength; i++) {
-            long av = fourWord(l3, l2, l1, atop, i), carry = 0;
-            for (int j = 0; j < blength; j++) {
-                long bv = fourWord(other.l3, other.l2, other.l1, btop, j);
+        for (int i = astart; i < alength; i++) {
+            long av = fourWord(a0, a1, a2, a3, i), carry = 0;
+            for (int j = bstart; j < blength; j++) {
+                long bv = fourWord(b0, b1, b2, b3, j);
                 long low = av * bv, high = Math.unsignedMultiplyHigh(av, bv);
                 long sum = low + result[i + j];
                 high += Long.compareUnsigned(sum, low) < 0 ? 1 : 0;
@@ -658,6 +695,43 @@ public final class Binary256 implements Binary<Binary256> {
             result[i + blength] = carry;
         }
         return result;
+    }
+
+    /** 幅值非零；只有右移能减少 long 分组数时才压缩，避免为稠密幅值增加移位工作。 */
+    private static int compactMagnitudeShift(long w0, long w1, long w2, long w3, int length) {
+        if (length <= 64) {
+            return 0;
+        }
+        int bits = ((length - 1) & 63) + 1;
+        // 1L << 64 会回绕为一，减少整组所需的 64 个低零位须直接检查整个最低组。
+        if (bits == 64 ? w0 != 0 : (w0 & ((1L << bits) - 1)) != 0) {
+            return 0;
+        }
+        return w0 != 0 ? Long.numberOfTrailingZeros(w0)
+                : w1 != 0 ? 64 + Long.numberOfTrailingZeros(w1)
+                : w2 != 0 ? 128 + Long.numberOfTrailingZeros(w2) : 192 + Long.numberOfTrailingZeros(w3);
+    }
+
+    /** 接收有限非零输入；低零位转移到位权，不丢弃乘积中任何会影响舍入的 bit。 */
+    private Binary256 multiplyFinite(Binary256 other, boolean negative) {
+        long atop = magnitudeWord(3), btop = other.magnitudeWord(3);
+        int abits = bitLength(l3, l2, l1, atop), bbits = bitLength(other.l3, other.l2, other.l1, btop);
+        int ashift = compactMagnitudeShift(l3, l2, l1, atop, abits);
+        int bshift = compactMagnitudeShift(other.l3, other.l2, other.l1, btop, bbits);
+        int alength = (abits - ashift + 63) / 64, blength = (bbits - bshift + 63) / 64;
+        long scale = scaleExponent() + other.scaleExponent() + ashift + bshift;
+        long a0 = shiftedWord(l3, l2, l1, atop, 0, ashift);
+        long b0 = shiftedWord(other.l3, other.l2, other.l1, btop, 0, bshift);
+        if (alength == 1 && blength == 1) {
+            return fromDyadic(negative, a0 * b0, Math.unsignedMultiplyHigh(a0, b0), scale);
+        }
+        long a1 = alength > 1 ? shiftedWord(l3, l2, l1, atop, 1, ashift) : 0;
+        long a2 = alength > 2 ? shiftedWord(l3, l2, l1, atop, 2, ashift) : 0;
+        long a3 = alength > 3 ? shiftedWord(l3, l2, l1, atop, 3, ashift) : 0;
+        long b1 = blength > 1 ? shiftedWord(other.l3, other.l2, other.l1, btop, 1, bshift) : 0;
+        long b2 = blength > 2 ? shiftedWord(other.l3, other.l2, other.l1, btop, 2, bshift) : 0;
+        long b3 = blength > 3 ? shiftedWord(other.l3, other.l2, other.l1, btop, 3, bshift) : 0;
+        return fromDyadic(negative, multiplyMagnitude(a0, a1, a2, a3, alength, b0, b1, b2, b3, blength), scale);
     }
 
     @Override
@@ -689,8 +763,7 @@ public final class Binary256 implements Binary<Binary256> {
         if (power != Integer.MIN_VALUE) {
             return other.scalbFinite(power, negative);
         }
-        return fromDyadic(negative, multiplyMagnitude(other),
-                scaleExponent() + other.scaleExponent());
+        return multiplyFinite(other, negative);
     }
 
     @Override
@@ -935,18 +1008,30 @@ public final class Binary256 implements Binary<Binary256> {
         if (isZero() || isInfinite()) {
             return this;
         }
-        long exponent = Math.floorDiv(magnitudeExponent(), 2);
-        long quantum = exponent - 236;
-        int shift = Math.toIntExact(scaleExponent() - 2 * quantum);
-        UnsignedWords.Root root = UnsignedWords.sqrtScaled(l3, l2, l1, magnitudeWord(3), shift);
-        long[] result = root.value();
-        // N = S² + R，中点平方为 S² + S + 1/4；R 为整数，向上舍入恰好等价于 R > S。
-        if (UnsignedWords.compare(root.remainder(), result) > 0) {
-            result = UnsignedWords.incrementInPlace(result);
+        // 正有限输入的平方根都在正常范围内，精确命中时可直接扩展为编码。
+        int inputExponent = magnitudeExponent();
+        long scale = scaleExponent(), top = magnitudeWord(3);
+        int length = (int) (inputExponent - scale + 1);
+        int trailing = length <= 64 ? Long.numberOfTrailingZeros(l3)
+                : compactMagnitudeShift(l3, l2, l1, top, length);
+        long reducedScale = scale + trailing;
+        if (length - trailing <= 64 && (reducedScale & 1) == 0) {
+            long magnitude = shiftedWord(l3, l2, l1, top, 0, trailing);
+            // 奇数平方模 8 为一；整数根最多 32 位，其平方可按完整的无符号 long 位模式验证。
+            if ((magnitude & 7) == 1) {
+                long exactRoot = UnsignedWords.sqrtUnsignedLong(magnitude);
+                if (exactRoot * exactRoot == magnitude) {
+                    return fromUnsignedLong(false, exactRoot, reducedScale / 2);
+                }
+            }
         }
-        // 本格式任意正有限输入的平方根都在正常范围内，整数舍入后的结果可精确编码。
-        return packRounded(false, UnsignedWords.word(result, 0), UnsignedWords.word(result, 1),
-                UnsignedWords.word(result, 2), UnsignedWords.word(result, 3), quantum, false);
+        long exponent = Math.floorDiv(inputExponent, 2);
+        long quantum = exponent - 236;
+        int shift = Math.toIntExact(scale - 2 * quantum);
+        long[] workspace = new long[8];
+        int comparison = UnsignedWords.sqrtScaled(l3, l2, l1, top, shift, workspace);
+        // N = S² + R，中点平方为 S² + S + 1/4；R 为整数，向上舍入恰好等价于 R > S。
+        return packRounded(false, workspace[0], workspace[1], workspace[2], workspace[3], quantum, comparison > 0);
     }
 
     @Override

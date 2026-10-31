@@ -12,6 +12,16 @@ import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 class UnsignedWordsTest {
+    private record ScaledRoot(long[] workspace) {
+        long[] value() {
+            return Arrays.copyOfRange(workspace, 0, 4);
+        }
+
+        long[] remainder() {
+            return Arrays.copyOfRange(workspace, 4, 8);
+        }
+    }
+
     static BigInteger integer(long[] words) {
         BigInteger result = BigInteger.ZERO;
         for (int i = words.length - 1; i >= 0; i--) {
@@ -74,19 +84,137 @@ class UnsignedWordsTest {
         }
     }
 
-    private static UnsignedWords.Root assertScaledRoot(BigInteger magnitude, int shift) {
+    @Test
+    void checksUnsignedLongSquareRootsAtEveryWidthAndAroundExactSquares() {
+        Random random = new Random(0x256500764L);
+        for (int length = 0; length <= 64; length++) {
+            BigInteger high = length == 0 ? BigInteger.ZERO : BigInteger.ONE.shiftLeft(length - 1);
+            for (BigInteger magnitude : new BigInteger[] {high, BigInteger.ONE.shiftLeft(length).subtract(BigInteger.ONE),
+                    new BigInteger(length, random)}) {
+                assertEquals(magnitude.sqrt().longValueExact(), UnsignedWords.sqrtUnsignedLong(magnitude.longValue()));
+            }
+        }
+        for (long value : new long[] {0, 1, 2, 31, 65535, 65536, 0x7fff_ffffL, 0x8000_0000L,
+                3_000_000_000L, 0xffff_ffffL}) {
+            BigInteger square = BigInteger.valueOf(value).pow(2);
+            for (int delta : new int[] {-1, 0, 1}) {
+                BigInteger magnitude = square.add(BigInteger.valueOf(delta));
+                if (magnitude.signum() >= 0) {
+                    assertEquals(magnitude.sqrt().longValueExact(), UnsignedWords.sqrtUnsignedLong(magnitude.longValue()));
+                }
+            }
+        }
+    }
+
+    private static ScaledRoot assertScaledRoot(BigInteger magnitude, int shift) {
+        long[] workspace = new long[8];
+        Arrays.fill(workspace, -1L);
+        return assertScaledRoot(magnitude, shift, workspace);
+    }
+
+    private static ScaledRoot assertScaledRoot(BigInteger magnitude, int shift, long[] workspace) {
         BigInteger input = magnitude.shiftLeft(shift);
         assertTrue(magnitude.signum() > 0 && magnitude.bitLength() <= 237);
         assertTrue(input.bitLength() == 473 || input.bitLength() == 474);
-        UnsignedWords.Root actual = UnsignedWords.sqrtScaled(magnitude.longValue(), magnitude.shiftRight(64).longValue(),
-                magnitude.shiftRight(128).longValue(), magnitude.shiftRight(192).longValue(), shift);
+        int comparison = UnsignedWords.sqrtScaled(magnitude.longValue(), magnitude.shiftRight(64).longValue(),
+                magnitude.shiftRight(128).longValue(), magnitude.shiftRight(192).longValue(), shift, workspace);
+        ScaledRoot actual = new ScaledRoot(workspace);
         BigInteger[] expected = input.sqrtAndRemainder();
         BigInteger root = integer(actual.value()), remainder = integer(actual.remainder());
         assertEquals(expected[0], root, "scaled root input=" + input.toString(16));
         assertEquals(expected[1], remainder, "scaled residual input=" + input.toString(16));
+        assertEquals(expected[1].compareTo(expected[0]), comparison, "scaled residual comparison input=" + input.toString(16));
         assertEquals(input, root.multiply(root).add(remainder));
         assertTrue(remainder.signum() >= 0 && remainder.compareTo(root.shiftLeft(1).add(BigInteger.ONE)) < 0);
         return actual;
+    }
+
+    private static void assertUnsigned128Root(BigInteger input) {
+        assertTrue(input.bitLength() == 127 || input.bitLength() == 128);
+        assertEquals(input.sqrt().longValue(), UnsignedWords.sqrtUnsigned128(input.longValue(), input.shiftRight(64).longValue()),
+                "unsigned 128-bit root input=" + input.toString(16));
+    }
+
+    @Test
+    void checksUnsigned128RootsAroundSquaresCarriesAndCandidateCorrections() {
+        BigInteger limit = BigInteger.ONE.shiftLeft(64);
+        for (BigInteger root : new BigInteger[] {BigInteger.ONE.shiftLeft(63), BigInteger.ONE.shiftLeft(63).add(BigInteger.ONE),
+                new BigInteger("12345678901234567891"), limit.subtract(BigInteger.TWO), limit.subtract(BigInteger.ONE)}) {
+            for (int delta : new int[] {-1, 0, 1}) {
+                BigInteger input = root.pow(2).add(BigInteger.valueOf(delta));
+                if (input.bitLength() >= 127) {
+                    assertUnsigned128Root(input);
+                }
+            }
+        }
+        BigInteger carryBoundary = BigInteger.ONE.shiftLeft(32).subtract(BigInteger.ONE).pow(2).shiftLeft(64);
+        for (int delta : new int[] {-1, 0, 1}) {
+            assertUnsigned128Root(carryBoundary.add(BigInteger.valueOf(delta)));
+        }
+        assertUnsigned128Root(BigInteger.valueOf(31).shiftLeft(122));
+        assertUnsigned128Root(BigInteger.ONE.shiftLeft(128).subtract(BigInteger.ONE));
+        Random random = new Random(0x2561285405L);
+        for (int i = 0; i < 10000; i++) {
+            assertUnsigned128Root(new BigInteger(128, random).setBit(126));
+        }
+    }
+
+    @Test
+    void checksScaledNewtonExact128PrefixesAndEveryNonzeroTailBit() {
+        for (BigInteger root : new BigInteger[] {BigInteger.ONE.shiftLeft(63), BigInteger.ONE.shiftLeft(63).add(BigInteger.ONE),
+                new BigInteger("12345678901234567891"), BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)}) {
+            BigInteger prefix = root.pow(2);
+            int tailBits = 237 - prefix.bitLength();
+            for (int bits : new int[] {0, 1, 31, 32, 63, 64, 65, 109, 110}) {
+                if (bits <= tailBits) {
+                    ScaledRoot exact = assertScaledRoot(prefix.shiftLeft(bits), 346 - bits);
+                    assertEquals(root.shiftLeft(173), integer(exact.value()));
+                    assertArrayEquals(new long[4], exact.remainder());
+                }
+            }
+            BigInteger magnitude = prefix.shiftLeft(tailBits);
+            int shift = 346 - tailBits;
+            ScaledRoot earlier = assertScaledRoot(magnitude, shift);
+            long[] savedRoot = earlier.value().clone(), savedResidual = earlier.remainder().clone();
+            for (int bit = 0; bit < tailBits; bit++) {
+                assertScaledRoot(magnitude.setBit(bit), shift);
+            }
+            assertScaledRoot(magnitude.add(BigInteger.ONE.shiftLeft(tailBits).subtract(BigInteger.ONE)), shift);
+            assertArrayEquals(savedRoot, earlier.value());
+            assertArrayEquals(savedResidual, earlier.remainder());
+        }
+    }
+
+    @Test
+    void checksScaledNewton64BitSeedsAtFirstAdjacentRootsAndCarries() {
+        for (BigInteger seed : new BigInteger[] {BigInteger.ONE.shiftLeft(63).add(BigInteger.ONE),
+                new BigInteger("10000000000000000000"), new BigInteger("12000000000000000000"), BigInteger.ONE.shiftLeft(64)}) {
+            BigInteger estimate = seed.shiftLeft(173);
+            int shift = estimate.pow(2).bitLength() > 473 ? 237 : 236;
+            BigInteger magnitude = estimate.pow(2).shiftRight(shift).subtract(BigInteger.ONE);
+            BigInteger input = magnitude.shiftLeft(shift);
+            assertEquals(seed, input.shiftRight(346).sqrt().add(BigInteger.ONE));
+            BigInteger[] division = input.divideAndRemainder(estimate);
+            assertEquals(estimate.subtract(BigInteger.ONE), division[0]);
+            ScaledRoot earlier = assertScaledRoot(magnitude, shift);
+            assertEquals(division[0], integer(earlier.value()));
+            assertEquals(division[1].add(division[0]), integer(earlier.remainder()));
+            long[] savedRoot = earlier.value().clone(), savedResidual = earlier.remainder().clone();
+            assertScaledRoot(BigInteger.ONE.shiftLeft(236).add(BigInteger.ONE), 236);
+            assertArrayEquals(savedRoot, earlier.value());
+            assertArrayEquals(savedResidual, earlier.remainder());
+        }
+    }
+
+    @Test
+    void checksScaledNewtonTwoDigitTrialCorrectionsAndRetainedSingleDigitSeeds() {
+        // 197 的前缀触发两次估商修正，33 位全一幅值触发钳制；31 位全一幅值保留单组除法。
+        long[] magnitudes = {1, 31, 197, 0x7fff_ffffL, 0xffff_ffffL, 0x1_ffff_ffffL, -1L};
+        int[] shifts = {473, 468, 465, 443, 442, 441, 410};
+        for (int i = 0; i < magnitudes.length; i++) {
+            BigInteger magnitude = integer(new long[] {magnitudes[i]});
+            assertScaledRoot(magnitude, shifts[i]);
+        }
     }
 
     @Test
@@ -125,12 +253,78 @@ class UnsignedWordsTest {
     }
 
     @Test
+    void checksScaledNewtonFirstDivisionAdjacentRootsAndOwnedResiduals() {
+        for (long seed : new long[] {0x8000_0001L, 2_500_000_000L, 3_000_000_000L, 0x1_0000_0000L}) {
+            BigInteger estimate = BigInteger.valueOf(seed).shiftLeft(205);
+            int shift = seed == 0x1_0000_0000L ? 237 : 236;
+            BigInteger input = estimate.pow(2).subtract(BigInteger.ONE.shiftLeft(shift));
+            BigInteger[] division = input.divideAndRemainder(estimate);
+            BigInteger expectedRoot = estimate.subtract(BigInteger.ONE);
+            assertEquals(expectedRoot, division[0]);
+            ScaledRoot result = assertScaledRoot(input.shiftRight(shift), shift);
+            assertEquals(expectedRoot, integer(result.value()));
+            assertEquals(division[1].add(expectedRoot), integer(result.remainder()));
+            assertEquals(seed == 0x1_0000_0000L ? 0 : 1,
+                    integer(result.remainder()).compareTo(expectedRoot));
+            long[] savedRoot = result.value().clone(), savedResidual = result.remainder().clone();
+            assertScaledRoot(BigInteger.ONE.shiftLeft(236).add(BigInteger.TWO), 236);
+            assertArrayEquals(savedRoot, result.value());
+            assertArrayEquals(savedResidual, result.remainder());
+        }
+    }
+
+    @Test
+    void checksScaledNewtonRootsAtThe64BitPrefixCarryBoundary() {
+        BigInteger boundary = BigInteger.ONE.shiftLeft(32).subtract(BigInteger.ONE).pow(2);
+        for (int width : new int[] {64, 65, 96, 127, 128, 129, 173, 192, 236, 237}) {
+            int tailBits = width - 64;
+            BigInteger tailMask = BigInteger.ONE.shiftLeft(tailBits).subtract(BigInteger.ONE);
+            for (BigInteger prefix : new BigInteger[] {boundary.subtract(BigInteger.ONE), boundary,
+                    boundary.add(BigInteger.ONE), BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE)}) {
+                for (BigInteger tail : new BigInteger[] {BigInteger.ZERO, tailMask}) {
+                    BigInteger magnitude = prefix.shiftLeft(tailBits).or(tail);
+                    BigInteger input = magnitude.shiftLeft(474 - width);
+                    BigInteger seed = input.shiftRight(410).sqrt().add(BigInteger.ONE);
+                    assertEquals(prefix.compareTo(boundary) < 0 ? 32 : 33, seed.bitLength());
+                    if (seed.bitLength() == 33) {
+                        assertEquals(BigInteger.ZERO, input.remainder(seed.shiftLeft(205)));
+                    }
+                    assertScaledRoot(magnitude, 474 - width);
+                }
+            }
+        }
+    }
+
+    @Test
+    void checksScaledNewtonShortDivisionWithUnsignedPairsAndNonzeroResiduals() {
+        Random random = new Random(0x25654047L);
+        boolean unsignedPair = false, highResidual = false;
+        for (int width = 1; width <= 237; width++) {
+            for (int parity = 0; parity <= 1; parity++) {
+                BigInteger magnitude = new BigInteger(width, random).setBit(width - 1);
+                int shift = 473 - width + parity;
+                BigInteger input = magnitude.shiftLeft(shift);
+                BigInteger seed = input.shiftRight(346).sqrt().add(BigInteger.ONE);
+                if (seed.bitLength() == 64) {
+                    BigInteger reduced = input.shiftRight(173);
+                    highResidual |= reduced.remainder(seed).bitLength() == 64;
+                    for (int digit = 0; digit < 8; digit++) {
+                        unsignedPair |= reduced.shiftRight((digit + 1) * 32).remainder(seed).bitLength() == 64;
+                    }
+                }
+                assertScaledRoot(magnitude, shift);
+            }
+        }
+        assertTrue(unsignedPair && highResidual);
+    }
+
+    @Test
     void checksScaledNewtonResidualsAtExactSquaresRoundingEdgesAndAdjacentCycles() {
         boolean exact = false, below = false, boundary = false, above = false, cycle = false;
         for (BigInteger input : Binary256CompatibilityFixtures.squareRootRoundingBoundaries()) {
             int shift = input.bitLength() - 237;
             assertTrue(input.getLowestSetBit() >= shift);
-            UnsignedWords.Root result = assertScaledRoot(input.shiftRight(shift), shift);
+            ScaledRoot result = assertScaledRoot(input.shiftRight(shift), shift);
             BigInteger root = integer(result.value()), residual = integer(result.remainder());
             exact |= residual.signum() == 0;
             below |= residual.equals(root.subtract(BigInteger.TWO));
@@ -145,7 +339,7 @@ class UnsignedWordsTest {
     @Test
     void checksRandomScaledNewtonRootsAndEarlierResultOwnership() {
         BigInteger high = BigInteger.ONE.shiftLeft(236);
-        UnsignedWords.Root earlier = assertScaledRoot(high.add(BigInteger.TWO), 236);
+        ScaledRoot earlier = assertScaledRoot(high.add(BigInteger.TWO), 236);
         long[] savedRoot = earlier.value().clone(), savedResidual = earlier.remainder().clone();
         Random random = new Random(0x2565A7E7L);
         for (int i = 0; i < 16000; i++) {
@@ -158,23 +352,55 @@ class UnsignedWordsTest {
     }
 
     @Test
+    void checksScaledNewtonShortRemaindersAndZeroWithoutTrimming() {
+        String[] magnitudes = {
+                "13331ad4ac5e3c4a8d92fb5eb5b9a38d4fd25edef3dd02de6eca0bf76248",
+                "1791641e19c01c6463d8486d457be5237c97072cb93ccc188b55ac7fe543",
+                "12ed5505e18cd1553d93205a31fc2cda2a1f0140961a28e00c4873eeadcb",
+                "11756d75569a298566fe9470f95faf5ca713c03b0dea1c1e775e49edce47"};
+        long[] workspace = new long[8];
+        Arrays.fill(workspace, -1L);
+        for (int i = 0; i < magnitudes.length; i++) {
+            BigInteger expected = BigInteger.valueOf(7);
+            if (i != 0) {
+                expected = expected.setBit(i * 64);
+            }
+            ScaledRoot result = assertScaledRoot(new BigInteger(magnitudes[i], 16), 236, workspace);
+            assertArrayEquals(Arrays.copyOf(words(expected), 4), result.remainder());
+        }
+        // 65 位奇数根超出精确前缀捷径的范围，Newton 终止仍可能得到零余数。
+        BigInteger wideSquare = BigInteger.ONE.shiftLeft(64).add(BigInteger.ONE).pow(2).shiftLeft(108);
+        BigInteger prefix = wideSquare.shiftLeft(236).shiftRight(346);
+        assertTrue(!prefix.sqrt().pow(2).equals(prefix));
+        ScaledRoot zero = assertScaledRoot(wideSquare, 236, workspace);
+        assertArrayEquals(new long[4], zero.remainder());
+    }
+
+    @Test
+    void checksScaledNewtonWorkspaceReuseAcrossAllReturnPaths() {
+        BigInteger unit = BigInteger.ONE.shiftLeft(236);
+        ScaledRoot earlier = assertScaledRoot(unit.add(BigInteger.ONE), 236);
+        long[] saved = earlier.workspace().clone();
+        long[] workspace = new long[8];
+        Arrays.fill(workspace, 0xa5a5_a5a5_a5a5_a5a5L);
+        BigInteger wideSquare = BigInteger.ONE.shiftLeft(64).add(BigInteger.ONE).pow(2).shiftLeft(108);
+        BigInteger[] magnitudes = {BigInteger.valueOf(197), unit.add(BigInteger.TWO), BigInteger.ONE,
+                BigInteger.ONE.shiftLeft(237).subtract(BigInteger.ONE), wideSquare, unit.add(BigInteger.ONE), BigInteger.ONE};
+        int[] shifts = {465, 236, 472, 237, 236, 236, 472};
+        for (int i = 0; i < magnitudes.length; i++) {
+            assertScaledRoot(magnitudes[i], shifts[i], workspace);
+            assertArrayEquals(saved, earlier.workspace());
+        }
+        assertArrayEquals(new long[] {0, 0, 0, 1L << 44, 0, 0, 0, 0}, workspace);
+    }
+
+    @Test
     void checksLargeModularExponents() {
         BigInteger modulus = BigInteger.ONE.shiftLeft(237).subtract(BigInteger.valueOf(42));
         for (long exponent : new long[] {0, 1, 63, 64, 237, 524285}) {
             assertEquals(BigInteger.TWO.modPow(BigInteger.valueOf(exponent), modulus),
                     integer(UnsignedWords.powerOfTwoMod(exponent, words(modulus))));
         }
-    }
-
-    @Test
-    void checksOwnedIncrementAcrossFullAndPartialWordCarries() {
-        for (int bit : new int[] {0, 1, 63, 64, 65, 127, 128, 192, 236, 237, 238, 256, 512}) {
-            for (int delta : new int[] {-1, 0, 1}) {
-                BigInteger value = BigInteger.ONE.shiftLeft(bit).add(BigInteger.valueOf(delta));
-                assertArrayEquals(words(value.add(BigInteger.ONE)), UnsignedWords.incrementInPlace(words(value)));
-            }
-        }
-        assertArrayEquals(new long[] {0, 0, 4}, UnsignedWords.incrementInPlace(new long[] {-1, -1, 3}));
     }
 
     @Test

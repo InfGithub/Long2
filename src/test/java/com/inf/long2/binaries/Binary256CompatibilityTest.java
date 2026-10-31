@@ -108,9 +108,67 @@ class Binary256CompatibilityTest {
 
     private static void assertSquareRoot(Bits bits) {
         Binary256 input = bits.actual(), result = input.sqrt();
-        assertRaw(bits.baseline().sqrt(), result, "Newton sqrt input=" + bits);
+        assertRaw(bits.baseline().sqrt(), result, "sqrt input=" + bits);
         assertEquals(raw(Binary256Reference.sqrt(input)), raw(result));
         assertEquals(bits, raw(input));
+    }
+
+    private static void assertScaledSquareRoot(BigInteger square, BigInteger root, long scale) {
+        Bits input = exact(square, scale);
+        assertSquareRoot(input);
+        if ((scale & 1) == 0) {
+            assertEquals(exact(root, scale / 2), raw(input.actual().sqrt()));
+        }
+    }
+
+    @Test
+    void preservesSmallSquareRootsAcrossNormalAndSubnormalScales() {
+        long[] roots = {1, 2, 3, 5, 7, 31, 32, 255, 65535, 65536,
+                0x7fff_ffffL, 0x8000_0000L, 0x8000_0001L, 3_037_000_499L, 0xffff_ffffL};
+        for (long value : roots) {
+            BigInteger root = BigInteger.valueOf(value), square = root.multiply(root);
+            int length = square.bitLength();
+            for (int shift = 0; shift <= 236 - length; shift++) {
+                assertScaledSquareRoot(square, root, -262378L + shift);
+            }
+            long normalScale = -262142L - length + 1, maximumScale = 262143L - length + 1;
+            for (long scale : new long[] {normalScale, normalScale + 1, -1000, -1, 0, 1, 1000,
+                    maximumScale - 1, maximumScale}) {
+                assertScaledSquareRoot(square, root, scale);
+            }
+        }
+    }
+
+    @Test
+    void preservesSquareRootNearMissesAndTheReducedMagnitudeWidthBoundary() {
+        List<BigInteger> roots = List.of(ONE, BigInteger.valueOf(3), BigInteger.valueOf(31),
+                ONE.shiftLeft(31).subtract(ONE), ONE.shiftLeft(31).add(ONE), ONE.shiftLeft(32).subtract(ONE),
+                ONE.shiftLeft(32), ONE.shiftLeft(32).add(ONE), ONE.shiftLeft(63).subtract(ONE),
+                ONE.shiftLeft(64).subtract(ONE), ONE.shiftLeft(118).add(ONE));
+        for (BigInteger root : roots) {
+            BigInteger square = root.multiply(root);
+            for (int delta : new int[] {-16, -8, -1, 0, 1, 8, 16}) {
+                BigInteger magnitude = square.add(BigInteger.valueOf(delta));
+                if (magnitude.signum() <= 0) {
+                    continue;
+                }
+                for (long scale : new long[] {-262378, -1, 0, 1, 262144L - magnitude.bitLength()}) {
+                    assertSquareRoot(exact(magnitude, scale));
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesRandomLowWidthSquareRootsAcrossScaleParityAndRange() {
+        Random random = new Random(0x256E7AC75007L);
+        for (int i = 0; i < 5000; i++) {
+            int length = i % 64 + 1;
+            BigInteger magnitude = new BigInteger(length, random).setBit(length - 1).setBit(0);
+            long scale = i % 3 == 0 ? -262378L + random.nextInt(237 - length)
+                    : (long) random.nextInt(-262142, 262144) - length + 1;
+            assertSquareRoot(exact(magnitude, scale));
+        }
     }
 
     @Test
@@ -139,6 +197,143 @@ class Binary256CompatibilityTest {
     }
 
     @Test
+    void preservesNewtonFirstDivisionAdjacentRootsAcrossExponentRange() {
+        for (long seed : new long[] {0x8000_0001L, 2_500_000_000L, 3_000_000_000L, 0x1_0000_0000L}) {
+            BigInteger estimate = BigInteger.valueOf(seed).shiftLeft(205);
+            int parity = seed == 0x1_0000_0000L ? 1 : 0;
+            BigInteger magnitude = estimate.pow(2).shiftRight(236 + parity).subtract(ONE);
+            for (int delta : new int[] {-2, -1, 0, 1}) {
+                BigInteger candidate = magnitude.add(BigInteger.valueOf(delta));
+                if (candidate.bitLength() != 237) {
+                    continue;
+                }
+                for (int exponent : new int[] {-262142, -262141, -1023, -1022, -1, 0, 1, 1022, 1023, 262142, 262143}) {
+                    if ((exponent & 1) == parity) {
+                        assertSquareRoot(normal(false, exponent, candidate.and(FRACTION_MASK)));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesNewtonShortDivisionSeedCarryBoundaryForNormalAndSubnormalInputs() {
+        BigInteger boundary = ONE.shiftLeft(32).subtract(ONE).pow(2);
+        for (BigInteger prefix : List.of(boundary.subtract(ONE), boundary, boundary.add(ONE), ONE.shiftLeft(64).subtract(ONE))) {
+            for (int width : new int[] {64, 96, 128, 192, 236, 237}) {
+                int tailBits = width - 64;
+                for (BigInteger tail : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(tailBits).subtract(ONE))) {
+                    if (tail.bitLength() > tailBits) {
+                        continue;
+                    }
+                    BigInteger magnitude = prefix.shiftLeft(tailBits).or(tail);
+                    if (width < 237) {
+                        assertSquareRoot(bits(magnitude));
+                    } else {
+                        for (int exponent : new int[] {-262141, -1023, -1, 1, 1023, 262143}) {
+                            assertSquareRoot(normal(false, exponent, magnitude.and(FRACTION_MASK)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preserves128PrefixSquareRootsAndNonzeroTailsAcrossExponentRange() {
+        for (BigInteger root : List.of(ONE.shiftLeft(63).add(ONE), new BigInteger("12345678901234567891"),
+                ONE.shiftLeft(64).subtract(ONE))) {
+            BigInteger square = root.pow(2);
+            int tailBits = 237 - square.bitLength(), parity = square.bitLength() - 127;
+            for (BigInteger tail : List.of(BigInteger.ZERO, ONE, ONE.shiftLeft(63), ONE.shiftLeft(64),
+                    ONE.shiftLeft(tailBits - 1), ONE.shiftLeft(tailBits).subtract(ONE))) {
+                BigInteger magnitude = square.shiftLeft(tailBits).or(tail);
+                for (int exponent : new int[] {-262142, -262141, -1023, -1022, -1, 0, 1, 1022, 1023, 262142, 262143}) {
+                    if ((exponent & 1) == parity) {
+                        assertSquareRoot(normal(false, exponent, magnitude.and(FRACTION_MASK)));
+                        if (tail.signum() == 0) {
+                            assertScaledSquareRoot(square, root, (long) exponent - 236 + tailBits);
+                        }
+                    }
+                }
+            }
+            for (int shift : new int[] {0, 1, 31, 32, 63, 64, 107, 108}) {
+                if (square.bitLength() + shift <= 236) {
+                    BigInteger magnitude = square.shiftLeft(shift);
+                    assertScaledSquareRoot(square, root, -262378L + shift);
+                    assertSquareRoot(bits(magnitude.add(ONE)));
+                }
+            }
+        }
+    }
+
+    @Test
+    void preserves64BitNewtonSeedCarriesAndFirstAdjacentRoots() {
+        for (BigInteger seed : List.of(ONE.shiftLeft(63).add(ONE), new BigInteger("10000000000000000000"),
+                new BigInteger("12000000000000000000"), ONE.shiftLeft(64))) {
+            BigInteger square = seed.shiftLeft(173).pow(2);
+            int parity = square.bitLength() > 473 ? 1 : 0;
+            BigInteger magnitude = square.shiftRight(236 + parity).subtract(ONE);
+            for (int delta : new int[] {-1, 0, 1}) {
+                BigInteger candidate = magnitude.add(BigInteger.valueOf(delta));
+                if (candidate.bitLength() != 237) {
+                    continue;
+                }
+                for (int exponent : new int[] {-262142, -262141, -1023, -1022, -1, 0, 1, 1022, 1023, 262142, 262143}) {
+                    if ((exponent & 1) == parity) {
+                        assertSquareRoot(normal(false, exponent, candidate.and(FRACTION_MASK)));
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesTwoDigitNewtonTrialsAndSingleDigitSeedsAcrossScales() {
+        for (BigInteger magnitude : List.of(ONE, BigInteger.valueOf(31), BigInteger.valueOf(197), ONE.shiftLeft(31).subtract(ONE),
+                ONE.shiftLeft(32).subtract(ONE), ONE.shiftLeft(33).subtract(ONE), ONE.shiftLeft(64).subtract(ONE))) {
+            for (long scale : new long[] {-262378, -1024, -1, 0, 1, 262144L - magnitude.bitLength()}) {
+                assertSquareRoot(exact(magnitude, scale));
+            }
+        }
+    }
+
+    @Test
+    void preservesSquareRootShortAndZeroRemaindersAcrossExponentRange() {
+        List<BigInteger> magnitudes = new ArrayList<>();
+        for (String magnitude : new String[] {
+                "13331ad4ac5e3c4a8d92fb5eb5b9a38d4fd25edef3dd02de6eca0bf76248",
+                "1791641e19c01c6463d8486d457be5237c97072cb93ccc188b55ac7fe543",
+                "12ed5505e18cd1553d93205a31fc2cda2a1f0140961a28e00c4873eeadcb",
+                "11756d75569a298566fe9470f95faf5ca713c03b0dea1c1e775e49edce47"}) {
+            magnitudes.add(new BigInteger(magnitude, 16));
+        }
+        magnitudes.add(ONE.shiftLeft(64).add(ONE).pow(2).shiftLeft(108));
+        for (BigInteger magnitude : magnitudes) {
+            for (int exponent : new int[] {-262142, -1022, -2, 0, 2, 1022, 262142}) {
+                assertSquareRoot(normal(false, exponent, magnitude.and(FRACTION_MASK)));
+            }
+        }
+    }
+
+    @Test
+    void preservesSquareRootRoundingCarriesAcrossThreeLowWords() {
+        for (long value : new long[] {0x8000_0001L, 2_500_000_000L, 3_000_000_000L}) {
+            BigInteger seed = BigInteger.valueOf(value), estimate = seed.shiftLeft(205);
+            BigInteger magnitude = seed.pow(2).shiftLeft(174).subtract(ONE);
+            BigInteger root = estimate.subtract(ONE);
+            BigInteger remainder = magnitude.shiftLeft(236).subtract(root.pow(2));
+            assertTrue(remainder.compareTo(root) > 0);
+            assertEquals(ONE.shiftLeft(192).subtract(ONE), root.and(ONE.shiftLeft(192).subtract(ONE)));
+            for (int exponent : new int[] {-262142, -1022, -2, 0, 2, 1022, 262142}) {
+                Bits input = normal(false, exponent, magnitude.and(FRACTION_MASK));
+                assertSquareRoot(input);
+                assertEquals(exact(seed, exponent / 2L - 31), raw(input.actual().sqrt()));
+            }
+        }
+    }
+
+    @Test
     void preservesRandomNewtonSquareRootsAcrossTheFullFiniteRange() {
         Random random = new Random(0x2565A7EF10A7L);
         for (int i = 0; i < 5000; i++) {
@@ -153,6 +348,138 @@ class Binary256CompatibilityTest {
         assertRaw(a.baseline().multiply(b.baseline()), x.multiply(y), "multiply a=" + a + " b=" + b);
         assertEquals(a, raw(x));
         assertEquals(b, raw(y));
+    }
+
+    private static List<BigInteger> sparseFractions() {
+        List<BigInteger> fractions = new ArrayList<>();
+        BigInteger word = ONE.shiftLeft(64).subtract(ONE);
+        for (int mask = 1; mask < 16; mask++) {
+            BigInteger fraction = BigInteger.ZERO;
+            for (int group = 0; group < 4; group++) {
+                if ((mask & (1 << group)) != 0) {
+                    fraction = fraction.or(word.shiftLeft(group * 64));
+                }
+            }
+            fractions.add(fraction.and(FRACTION_MASK));
+        }
+        return fractions;
+    }
+
+    private static void assertProductAndRoundingResidual(Bits a, Bits b) {
+        assertMultiply(a, b);
+        Binary256 x = a.actual(), y = b.actual();
+        assertEquals(raw(Binary256Reference.multiply(x, y)), raw(x.multiply(y)));
+        // 抵消已舍入的乘积，使乘积低位的进位和 sticky 差异能够影响最终编码。
+        Bits addend = raw(a.baseline().multiply(b.baseline()).negate());
+        assertFma(a, b, addend);
+        assertEquals(raw(Binary256Reference.fma(x, y, addend.actual())), raw(x.fma(y, addend.actual())));
+    }
+
+    private static void assertFiniteMultiply(Bits a, Bits b) {
+        assertMultiply(a, b);
+        assertEquals(raw(Binary256Reference.multiply(a.actual(), b.actual())), raw(a.actual().multiply(b.actual())));
+    }
+
+    @Test
+    void preservesCompactedProductsAtEveryTrailingBitCountAndWordBoundary() {
+        int[] widths = {1, 2, 53, 63, 64, 65, 119, 127, 128, 129, 177, 191, 192, 193, 237};
+        for (int shift = 0; shift <= 236; shift++) {
+            int width = 237 - shift;
+            BigInteger magnitude = ONE.shiftLeft(width).subtract(ONE);
+            if (width > 2 && (shift & 1) != 0) {
+                magnitude = magnitude.subtract(BigInteger.TWO);
+            }
+            Bits a = exact(magnitude, 1L - width);
+            for (int otherWidth : widths) {
+                BigInteger other = ONE.shiftLeft(otherWidth).subtract(ONE);
+                if (otherWidth > 2 && (otherWidth & 1) == 0) {
+                    other = other.subtract(BigInteger.TWO);
+                }
+                Bits b = exact(other, 1L - otherWidth);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(b, b.negative())) {
+                        assertFiniteMultiply(x, y);
+                        assertFiniteMultiply(y, x);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesScalarProductsAtSubnormalMidpointsAndBothLongWordBoundaries() {
+        List<BigInteger> magnitudes = List.of(BigInteger.valueOf(3), BigInteger.valueOf(5), BigInteger.valueOf(7),
+                ONE.shiftLeft(63).subtract(ONE), ONE.shiftLeft(63).add(ONE), ONE.shiftLeft(64).subtract(ONE));
+        int[] discardedBits = {-1, 0, 1, 2, 31, 32, 63, 64, 65, 95, 96, 127, 128, 129};
+        for (int discarded : discardedBits) {
+            long scale = -262378L - discarded;
+            long ascale = Math.floorDiv(scale, 2), bscale = scale - ascale;
+            for (BigInteger am : magnitudes) {
+                for (BigInteger bm : magnitudes) {
+                    Bits a = exact(am, ascale), b = exact(bm, bscale);
+                    for (Bits x : List.of(a, a.negative())) {
+                        for (Bits y : List.of(b, b.negative())) {
+                            assertFiniteMultiply(x, y);
+                            assertFiniteMultiply(y, x);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesRandomCompactedProductsAcrossRoundingAndExponentEdges() {
+        Random random = new Random(0x256C0A7AC7L);
+        int[] widths = {2, 3, 53, 63, 64, 65, 106, 118, 119, 127, 128, 129, 176, 177, 178, 191, 192, 193, 236, 237};
+        int[] exponents = {-262381, -262380, -262379, -262378, -262377, -262143, -262142, -262141,
+                -1, 0, 1, 262142, 262143, 262144};
+        for (int i = 0; i < 2000; i++) {
+            int awidth = widths[i % widths.length], bwidth = widths[random.nextInt(widths.length)];
+            BigInteger am = new BigInteger(awidth, random).setBit(awidth - 1).setBit(0);
+            BigInteger bm = new BigInteger(bwidth, random).setBit(bwidth - 1).setBit(0);
+            int sum = exponents[i % exponents.length], ae = Math.floorDiv(sum, 2), be = sum - ae;
+            Bits a = exact(am, (long) ae - awidth + 1), b = exact(bm, (long) be - bwidth + 1);
+            if (random.nextBoolean()) {
+                a = a.negative();
+            }
+            if (random.nextBoolean()) {
+                b = b.negative();
+            }
+            assertFiniteMultiply(a, b);
+            assertFiniteMultiply(b, a);
+        }
+    }
+
+    @Test
+    void preservesSparseProductsAndFmaResidualsAcrossAllZeroGroupPatterns() {
+        List<BigInteger> fractions = sparseFractions();
+        for (BigInteger af : fractions) {
+            for (BigInteger bf : fractions) {
+                Bits a = normal(false, 0, af), b = normal(false, 0, bf);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(b, b.negative())) {
+                        assertProductAndRoundingResidual(x, y);
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void preservesSubnormalSparseProductsAndFmaResidualsAcrossOperandWordLengths() {
+        List<BigInteger> fractions = sparseFractions();
+        for (BigInteger af : fractions) {
+            for (BigInteger bf : fractions) {
+                Bits a = bits(af), b = normal(false, 262143, bf);
+                for (Bits x : List.of(a, a.negative())) {
+                    for (Bits y : List.of(b, b.negative())) {
+                        assertProductAndRoundingResidual(x, y);
+                        assertProductAndRoundingResidual(y, x);
+                    }
+                }
+            }
+        }
     }
 
     @Test
