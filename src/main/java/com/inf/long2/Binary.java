@@ -141,6 +141,17 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     }
 
     /**
+     * 判断文本是否符合 {@link #of(String)} 接受的语法，null、空串或非法格式返回 false。
+     * 仅校验语法，不要求数值能被目标格式精确表示或舍入为有限非零数；
+     * 合法的超长指数、NaN 及正负无穷同样返回 true。
+     * 校验不执行数值转换，时间复杂度为 O(n)，额外空间为 O(1)，n 为文本长度。
+     * 本静态方法是实现类的声明契约，调用者应使用具体实现类的对应方法。
+     */
+    static boolean isValid(String value) {
+        return false;
+    }
+
+    /**
      * 从完整的有符号整数数值直接舍入到目标格式，整数零转换为正零。
      * 不得先通过 {@link Int#toDouble()} 转换，以免丢失源值精度或范围。
      */
@@ -159,6 +170,15 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
 
     /** 返回非空的固定格式，所有实例均与当前实现类型的 FORMAT 相等，包括零、无穷和 NaN。 */
     Format format();
+
+    /**
+     * 返回当前值原始二进制编码的大端序字节数组，索引零为最高有效字节。
+     * 具体实现须说明编码布局和字节长度；格式描述 {@link Format} 不限定这些编码细节。
+     * 完整保留符号、指数、小数字段，以及 NaN 的符号、payload 和 signaling 位，不执行数值转换。
+     * 每次返回独立的新数组，修改数组不会影响接收对象或其他调用返回的数组。
+     * 单个 byte 的符号不改变其原始八位模式。
+     */
+    byte[] toBytes();
 
     /**
      * 返回当前值的符号位，负零和负无穷返回 true，正零和正无穷返回 false。

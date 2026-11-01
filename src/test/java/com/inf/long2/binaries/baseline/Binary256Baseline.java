@@ -10,9 +10,18 @@ import com.inf.long2.Int;
  * 优化生产代码时保持此基线不变；契约变更须单独审查基线和预期结果。
  */
 public final class Binary256Baseline implements Binary<Binary256Baseline> {
-    // 字符串转换不属于冻结数值基线；这里只补齐新增接口契约，不充当转换测试的参考实现。
+    // 新增转换与文本校验不属于冻结数值基线；这里只补齐接口契约，不充当这些功能的参考实现。
     public static Binary256Baseline of(String value) {
         throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
+    }
+
+    public static boolean isValid(String value) {
+        throw new UnsupportedOperationException("Text validation is outside the frozen baseline");
+    }
+
+    @Override
+    public byte[] toBytes() {
+        throw new UnsupportedOperationException("Byte conversion is outside the frozen baseline");
     }
 
     @Override

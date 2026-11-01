@@ -34,6 +34,7 @@ class BinaryContractTest extends ProcessorTestSupport {
             public static Target of(java.lang.String value) { return null; }
             public static Target of(com.inf.long2.Int<?> value) { return null; }
             public static Target of(com.inf.long2.Binary<?> value) { return null; }
+            public static boolean isValid(java.lang.String value) { return false; }
             """;
 
     @Test
@@ -58,6 +59,12 @@ class BinaryContractTest extends ProcessorTestSupport {
                     }
                     static <T extends com.inf.long2.Binary<T>> String format(T value, int digits) {
                         return value.toString(digits) + value.toScientificString(digits);
+                    }
+                    static byte[] bytes(com.inf.long2.Binary<?> value) {
+                        return value.toBytes();
+                    }
+                    static boolean valid(String value) {
+                        return Target.isValid(value);
                     }
                 }
                 """);
@@ -123,6 +130,33 @@ class BinaryContractTest extends ProcessorTestSupport {
         assertFalse(result.success(), result.messages());
         assertTrue(result.messages().contains("must declare: public static fixture.Target of(" + parameterType + " "),
                 result.messages());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "wrongReturn", "wrongParameter", "inherited"})
+    void requiresDirectStaticStringValidation(String variant) throws IOException {
+        String declaration = "public static boolean isValid(java.lang.String value) { return false; }";
+        String replacement = switch (variant) {
+            case "wrongReturn" -> "public static java.lang.Boolean isValid(java.lang.String value) { return false; }";
+            case "wrongParameter" -> "public static boolean isValid(java.lang.Object value) { return false; }";
+            default -> "";
+        };
+        String source = fixture(DECLARATIONS.replace(declaration, replacement));
+        if (variant.equals("inherited")) {
+            source = "class Base { " + declaration + " }\n"
+                    + source.replace("class Target implements", "class Target extends Base implements");
+        }
+        Compilation result = compile(source);
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains("must declare: public static boolean isValid(java.lang.String "),
+                result.messages());
+    }
+
+    @Test
+    void requiresTheRawByteConversion() throws IOException {
+        Compilation result = compile(fixture(DECLARATIONS, "toBytes"));
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains("toBytes()"), result.messages());
     }
 
     @ParameterizedTest

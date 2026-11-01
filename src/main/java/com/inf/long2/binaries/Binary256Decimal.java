@@ -17,12 +17,28 @@ final class Binary256Decimal {
     private Binary256Decimal() {
     }
 
-    static Binary256 parse(String text) {
-        Objects.requireNonNull(text);
+    private enum TextKind {
+        FINITE, NAN, INFINITY
+    }
+
+    /** 固定大小的语法扫描结果；首末非零数字索引不包括小数点，scale 已合并小数位和末尾零。 */
+    private record ScannedDecimal(TextKind kind, boolean negative, int start, int end,
+            int first, int last, long scale) {
+    }
+
+    static boolean isValid(String text) {
+        return scan(text) != null;
+    }
+
+    /** 唯一的语法扫描入口，不抛格式异常，不构造数值或随输入长度增长的工作区。 */
+    private static ScannedDecimal scan(String text) {
+        if (text == null) {
+            return null;
+        }
         switch (text) {
-            case "NaN": return Binary256.NaN;
-            case "Infinity", "+Infinity": return Binary256.POSITIVE_INFINITY;
-            case "-Infinity": return Binary256.NEGATIVE_INFINITY;
+            case "NaN": return new ScannedDecimal(TextKind.NAN, false, 0, 0, 0, 0, 0);
+            case "Infinity", "+Infinity": return new ScannedDecimal(TextKind.INFINITY, false, 0, 0, 0, 0, 0);
+            case "-Infinity": return new ScannedDecimal(TextKind.INFINITY, true, 0, 0, 0, 0, 0);
             default: break;
         }
         int length = text.length(), start = 0;
@@ -39,7 +55,7 @@ final class Binary256Decimal {
                 continue;
             }
             if (c < '0' || c > '9') {
-                throw invalid(text);
+                return null;
             }
             if (c != '0') {
                 if (first < 0) {
@@ -53,7 +69,7 @@ final class Binary256Decimal {
             }
         }
         if (digits == 0) {
-            throw invalid(text);
+            return null;
         }
         int end = index;
         long exponent = 0;
@@ -67,23 +83,41 @@ final class Binary256Decimal {
             while (index < length) {
                 char c = text.charAt(index++);
                 if (c < '0' || c > '9') {
-                    throw invalid(text);
+                    return null;
                 }
                 // 饱和值远大于字符串可能提供的小数位修正，故不会误判相互抵消的指数。
                 exponent = exponent > (EXPONENT_LIMIT - (c - '0')) / 10
                         ? EXPONENT_LIMIT : exponent * 10 + c - '0';
             }
             if (index == exponentStart) {
-                throw invalid(text);
+                return null;
             }
             if (exponentNegative) {
                 exponent = -exponent;
             }
         }
+        long scale = exponent - fraction + (digits - 1L - last);
+        return new ScannedDecimal(TextKind.FINITE, negative, start, end, first, last, scale);
+    }
+
+    static Binary256 parse(String text) {
+        Objects.requireNonNull(text);
+        ScannedDecimal scanned = scan(text);
+        if (scanned == null) {
+            throw invalid(text);
+        }
+        if (scanned.kind() == TextKind.NAN) {
+            return Binary256.NaN;
+        }
+        boolean negative = scanned.negative();
+        if (scanned.kind() == TextKind.INFINITY) {
+            return infinity(negative);
+        }
+        int first = scanned.first(), last = scanned.last();
         if (first < 0) {
             return zero(negative);
         }
-        long scale = exponent - fraction + (digits - 1L - last);
+        long scale = scanned.scale();
         long decimalExponent = scale + (last - (long) first);
         // 保守边界严格包围全部有限非零舍入区间；此时整段文本已完成语法检查。
         if (decimalExponent > 80000) {
@@ -94,7 +128,7 @@ final class Binary256Decimal {
         }
         long[] coefficient = new long[0];
         int ordinal = 0, chunk = 0, chunkDigits = 0;
-        for (index = start; index < end; index++) {
+        for (int index = scanned.start(); index < scanned.end(); index++) {
             char c = text.charAt(index);
             if (c == '.') {
                 continue;

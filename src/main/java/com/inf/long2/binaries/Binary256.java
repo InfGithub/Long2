@@ -116,6 +116,22 @@ public final class Binary256 implements Binary<Binary256> {
     }
 
     /**
+     * 返回新的 32 字节大端序原始编码，与 getRawLong(0..3) 的顺序一致。
+     * bit 255 为符号，bit 236 至 bit 254 为指数，其余位为小数；包括 NaN 编码在内的所有位均原样保留。
+     */
+    @Override
+    public byte[] toBytes() {
+        byte[] result = new byte[32];
+        for (int group = 0; group < 4; group++) {
+            long word = getRawLong(group);
+            for (int index = 0; index < 8; index++) {
+                result[group * 8 + index] = (byte) (word >>> (56 - index * 8));
+            }
+        }
+        return result;
+    }
+
+    /**
      * 从 long 精确构造，包含 Long.MIN_VALUE。
      *
      * @see Binary#of(long)
@@ -1282,6 +1298,11 @@ public final class Binary256 implements Binary<Binary256> {
     /** 从普通或科学计数法十进制文本直接按最近偶数规则舍入，详见 {@link Binary#of(String)}。 */
     public static Binary256 of(String value) {
         return Binary256Decimal.parse(value);
+    }
+
+    /** 仅判断文本是否符合 {@link Binary#of(String)} 的语法，null 返回 false，不执行数值转换。 */
+    public static boolean isValid(String value) {
+        return Binary256Decimal.isValid(value);
     }
 
     @Override
