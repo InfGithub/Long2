@@ -361,6 +361,15 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     T scalb(long scaleFactor);
 
     /**
+     * 返回当前值最低有效位的单位大小（ULP）。有限值的结果精确为 {@code 2^scaleExponent()}，始终为正。
+     * 正常数为 {@code 2^(E-p+1)}，其中 E 为正常数无偏指数、p 为格式精度；
+     * 次正规数及正负零均返回 MIN_VALUE，即 {@code 2^(emin-p+1)}。
+     * 正负同幅值的 ULP 相同；最大有限值的 ULP 仍为有限值，不由 nextUp() 与当前值的差确定。
+     * NaN 返回 NaN，正负无穷均返回正无穷，不承诺保留 NaN 编码信息。
+     */
+    T ulp();
+
+    /**
      * 返回朝正无穷方向的相邻数值，正负零均得到 MIN_VALUE，负 MIN_VALUE 得到负零。
      * 正无穷保持不变，负无穷得到最负有限数，最大有限正数得到正无穷，NaN 返回 NaN。
      */

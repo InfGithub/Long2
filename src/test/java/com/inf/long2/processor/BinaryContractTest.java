@@ -70,6 +70,9 @@ class BinaryContractTest extends ProcessorTestSupport {
                     static boolean valid(String value) {
                         return Target.isValid(value);
                     }
+                    static <T extends com.inf.long2.Binary<T>> T ulp(T value) {
+                        return value.ulp();
+                    }
                 }
                 """);
     }
@@ -161,6 +164,13 @@ class BinaryContractTest extends ProcessorTestSupport {
         Compilation result = compile(fixture(DECLARATIONS, "toBytes"));
         assertFalse(result.success(), result.messages());
         assertTrue(result.messages().contains("toBytes()"), result.messages());
+    }
+
+    @Test
+    void requiresTheUlpInstanceMethod() throws IOException {
+        Compilation result = compile(fixture(DECLARATIONS, "ulp"));
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains("ulp()"), result.messages());
     }
 
     @ParameterizedTest

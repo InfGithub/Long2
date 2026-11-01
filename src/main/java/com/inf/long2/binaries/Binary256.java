@@ -1197,6 +1197,17 @@ public final class Binary256 implements Binary<Binary256> {
         return scalbFinite(scaleFactor, signBit());
     }
 
+    @Override
+    public Binary256 ulp() {
+        if (isNaN()) {
+            return NaN;
+        }
+        if (isInfinite()) {
+            return POSITIVE_INFINITY;
+        }
+        return ONE.scalb(scaleExponent());
+    }
+
     /** 接收值为有限非零数，negative 已包含调用方需要的符号变换。 */
     private Binary256 scalbFinite(long scaleFactor, boolean negative) {
         int encoded = encodedExponent();
