@@ -1,5 +1,7 @@
 package com.inf.long2.ints;
 
+import java.util.Objects;
+
 import com.inf.long2.Int;
 
 /**
@@ -150,6 +152,44 @@ public final class Int256 implements Int<Int256> {
             throw new IllegalArgumentException("parameter 'longs' must contain exactly 4 elements");
         }
         return new Int256(longs[0], longs[1], longs[2], longs[3]);
+    }
+
+    /**
+     * 从恰好 32 字节的大端序补码位模式恢复整数，不补零、符号扩展或截断。
+     * 不修改或持有输入数组，与 toBytes() 逐位互逆。
+     *
+     * @throws NullPointerException 数组为 null
+     * @throws IllegalArgumentException 数组长度不等于 32
+     * @see Int#of(byte[])
+     */
+    public static Int256 of(byte[] bytes) {
+        Objects.requireNonNull(bytes);
+        if (bytes.length != 32) {
+            throw new IllegalArgumentException("bytes must contain exactly 32 elements");
+        }
+        return new Int256(readRawLong(bytes, 0), readRawLong(bytes, 8),
+                readRawLong(bytes, 16), readRawLong(bytes, 24));
+    }
+
+    private static long readRawLong(byte[] bytes, int offset) {
+        long word = 0;
+        for (int index = 0; index < 8; index++) {
+            word = (word << 8) | (bytes[offset + index] & 0xffL);
+        }
+        return word;
+    }
+
+    /** 返回新的 32 字节大端序完整补码，与 getLong(0..3) 的顺序一致。 */
+    @Override
+    public byte[] toBytes() {
+        byte[] result = new byte[32];
+        for (int group = 0; group < 4; group++) {
+            long word = getLong(group);
+            for (int index = 0; index < 8; index++) {
+                result[group * 8 + index] = (byte) (word >>> (56 - index * 8));
+            }
+        }
+        return result;
     }
 
     /**
@@ -324,32 +364,15 @@ public final class Int256 implements Int<Int256> {
      * @see Int#parseInt(String)
      */
     public static Int256 parseInt(String value) {
-        if (value == null || value.isEmpty()) {
-            throw new NumberFormatException("Empty decimal value");
+        int index = scanDecimal(value);
+        if (index < 0) {
+            throw new NumberFormatException("Invalid decimal value: " + value);
         }
-
-        int index = 0;
-        boolean negative = false;
-        char first = value.charAt(0);
-
-        if (first == '+' || first == '-') {
-            negative = first == '-';
-            index = 1;
-        }
-
-        if (index == value.length()) {
-            throw new NumberFormatException("Missing decimal digits");
-        }
-
+        boolean negative = value.charAt(0) == '-';
         long a0 = 0L, a1 = 0L, a2 = 0L, a3 = 0L;
 
         for (; index < value.length(); index++) {
             int digit = value.charAt(index) - '0';
-
-            if (digit < 0 || digit > 9) {
-                throw new NumberFormatException(
-                        "Invalid decimal value: " + value);
-            }
 
             // 按 32 位分段乘十并加上新数字，各段中间结果小于 2^36，进位从最低组向最高组传递。
             long p = (a3 & 0xffffffffL) * 10L + digit;
@@ -386,6 +409,30 @@ public final class Int256 implements Int<Int256> {
         return new Int256(a0, a1, a2, a3);
     }
 
+    /** 仅校验 parseInt(String) 接受的十进制语法，null 返回 false，不执行数值转换。 */
+    public static boolean isValid(String value) {
+        return scanDecimal(value) >= 0;
+    }
+
+    /** 返回合法十进制文本的首位数字索引；非法输入（包括 null）返回 -1。 */
+    private static int scanDecimal(String value) {
+        if (value == null || value.isEmpty()) {
+            return -1;
+        }
+        char first = value.charAt(0);
+        int start = first == '+' || first == '-' ? 1 : 0;
+        if (start == value.length()) {
+            return -1;
+        }
+        for (int index = start; index < value.length(); index++) {
+            char c = value.charAt(index);
+            if (c < '0' || c > '9') {
+                return -1;
+            }
+        }
+        return start;
+    }
+
     @Override
     public String toHexString() {
         return "0x%016x%016x%016x%016x".formatted(
@@ -398,26 +445,12 @@ public final class Int256 implements Int<Int256> {
      * @see Int#parseHexInt(String)
      */
     public static Int256 parseHexInt(String value) {
-        if (!value.startsWith("0x")) {
-            throw new NumberFormatException("Missing 0x prefix");
+        Objects.requireNonNull(value);
+        if (!isHexValid(value)) {
+            throw new NumberFormatException("Invalid hexadecimal value: " + value);
         }
-
-        String hex = value.substring(2);
-        if (hex.isEmpty()) {
-            throw new NumberFormatException("Empty hexadecimal value");
-        }
-
-        for (int i = 0; i < hex.length(); i++) {
-            char c = hex.charAt(i);
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-                throw new NumberFormatException("Invalid hexadecimal digit: " + c);
-            }
-        }
-
-        if (hex.length() > 64) {
-            hex = hex.substring(hex.length() - 64);
-        }
-
+        // 完整语法已校验，只复制最终保留的最多 64 位，避免复制被截断的高位文本。
+        String hex = value.substring(Math.max(2, value.length() - 64));
         hex = "0".repeat(64 - hex.length()) + hex;
 
         return new Int256(
@@ -425,6 +458,20 @@ public final class Int256 implements Int<Int256> {
                 Long.parseUnsignedLong(hex.substring(16, 32), 16),
                 Long.parseUnsignedLong(hex.substring(32, 48), 16),
                 Long.parseUnsignedLong(hex.substring(48, 64), 16));
+    }
+
+    /** 仅校验 parseHexInt(String) 接受的小写十六进制语法，检查包括被截断高位在内的全部字符。 */
+    public static boolean isHexValid(String value) {
+        if (value == null || value.length() <= 2 || !value.startsWith("0x")) {
+            return false;
+        }
+        for (int index = 2; index < value.length(); index++) {
+            char c = value.charAt(index);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override

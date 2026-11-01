@@ -23,7 +23,7 @@ import com.inf.long2.util.annotations.StaticMethodImplementsCheck;
  * {@code equals(null)} 返回 {@code false}。
  *
  * <p>本接口的静态成员用于描述实现类必须直接声明的对应成员。
- * 字段初始化值与静态方法体中的 {@code null} 是契约占位，调用者应使用具体实现类的静态成员。
+ * 字段初始化值与静态方法体是契约占位，调用者应使用具体实现类的静态成员。
  * 实现类应提供非空的 {@code public static final} 常量字段及对应的 {@code public static} 方法，
  * 声明类型中的本接口类型替换为实现类类型。
  * AP 检查对应成员的声明和类型，不检查字段值、{@code final} 修饰符或方法的行为。
@@ -67,6 +67,25 @@ public interface Int<T extends Int<T>> extends Comparable<T> {
     }
 
     /**
+     * 从恰好 W/8 字节的大端序补码原始位模式恢复整数，索引零为最高有效字节。
+     * 所有位模式均合法；不补零、符号扩展或截断，与 {@link #toBytes()} 逐位互逆。
+     * 不修改或持有输入数组，构造后修改数组不影响结果。
+     *
+     * @throws NullPointerException 数组为 null
+     * @throws IllegalArgumentException 数组长度不等于 W/8
+     */
+    public static Int<?> of(byte[] bytes) {
+        return null;
+    }
+
+    /**
+     * 返回完整 W 位补码的大端序原始编码，固定为 W/8 字节，与 getLong(0..N-1) 的顺序一致。
+     * 保留前导零及负数的全部补码高位；单个 byte 的符号不改变其原始八位模式。
+     * 每次返回独立的新数组，修改数组不影响接收对象或其他调用返回的数组。
+     */
+    public byte[] toBytes();
+
+    /**
      * 将有限 double 向零截断为整数，结果超出数值范围时钳制到对应极值。
      * {@code NaN} 转为零，正负无穷分别转为最大值和最小值，正零和负零均转为零。
      */
@@ -99,6 +118,16 @@ public interface Int<T extends Int<T>> extends Comparable<T> {
     }
 
     /**
+     * 仅校验 {@link #parseInt(String)} 的十进制语法，接受可选的一个 ASCII 正负号及至少一位 ASCII 数字。
+     * 允许前导零；null、空串或非法格式返回 false，不接受十六进制、小数点、指数或空白。
+     * 不检查数值范围，合法的超长整数同样返回 true，与解析时保留低 W 位的规则一致。
+     * 不执行数值转换，时间复杂度为 O(n)，额外空间为 O(1)，n 为文本长度。
+     */
+    public static boolean isValid(String value) {
+        return false;
+    }
+
+    /**
      * 返回完整 W 位原始位模式，以 {@code 0x} 开头，后接恰好 {@code W/4} 位小写十六进制数字。
      * 保留前导零，负数使用补码位模式，不另加负号。
      */
@@ -114,6 +143,16 @@ public interface Int<T extends Int<T>> extends Comparable<T> {
      */
     public static Int<?> parseHexInt(String value) {
         return null;
+    }
+
+    /**
+     * 仅校验 {@link #parseHexInt(String)} 的语法，接受小写 0x 前缀及至少一位 ASCII 小写十六进制数字。
+     * null、空串或非法格式返回 false，不接受正负号、空白或大写字母。
+     * 允许前导零和超长文本，全部数字都须合法，包括解析时截断丢弃的高位。
+     * 不执行数值转换，时间复杂度为 O(n)，额外空间为 O(1)，n 为文本长度。
+     */
+    public static boolean isHexValid(String value) {
+        return false;
     }
 
     /** 仅当参数属于同一实现类型且数值相等时返回 true，{@code null} 和其他类型均返回 false。 */
