@@ -25,6 +25,16 @@ public final class Binary256Baseline implements Binary<Binary256Baseline> {
         return super.toString();
     }
 
+    @Override
+    public String toString(int fractionDigits) {
+        throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
+    }
+
+    @Override
+    public String toScientificString(int fractionDigits) {
+        throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
+    }
+
     private static final int BIAS = 262143;
     private static final int QMIN = -262378;
     private static final long FRACTION_MASK = 0x0000_0fff_ffff_ffffL;

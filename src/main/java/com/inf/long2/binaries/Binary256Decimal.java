@@ -1,5 +1,6 @@
 package com.inf.long2.binaries;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 /** 精确十进制转换；幅值低组在前，不经过其他浮点格式。 */
@@ -184,6 +185,200 @@ final class Binary256Decimal {
     }
 
     private record Decimal(String digits, int exponent) {
+    }
+
+    static String format(Binary256 value, boolean scientific, int fractionDigits) {
+        if (fractionDigits < 0) {
+            throw new IllegalArgumentException("fractionDigits must not be negative");
+        }
+        if (!value.isFinite()) {
+            return format(value, scientific);
+        }
+        boolean negative = value.signBit();
+        // 先检查必需的最小长度，尤其避免超大参数在精确转换前发生 int 溢出。
+        checkLength((negative ? 1L : 0L) + 1 + (fractionDigits == 0 ? 0L : 1L + fractionDigits)
+                + (scientific ? 2 : 0));
+        if (value.isZero()) {
+            return scientific ? scientificFixed(negative, "0", fractionDigits, 0)
+                    : plainFixed(negative, "0", 0, fractionDigits);
+        }
+        long[] magnitude = UnsignedWords.trim(new long[] {value.getSignificandLong(3),
+                value.getSignificandLong(2), value.getSignificandLong(1), value.getSignificandLong(0)});
+        int trailing = 0;
+        while (magnitude[trailing / 64] == 0) {
+            trailing += 64;
+        }
+        trailing += Long.numberOfTrailingZeros(magnitude[trailing / 64]);
+        magnitude = right(magnitude, trailing);
+        int scale = Math.toIntExact(value.scaleExponent() + trailing);
+        int exactFractionDigits = Math.max(-scale, 0);
+        int exponent = scientific ? decimalExponent(magnitude, scale) : 0;
+        long decimalShift = fractionDigits - (long) exponent;
+        String digits;
+        int appendedZeros = 0;
+        if (decimalShift >= exactFractionDigits) {
+            // 精确展开已经结束；仅计算有限的非零部分，余下请求位数由排版直接补零。
+            long[] coefficient = scale >= 0 ? UnsignedWords.left(magnitude, scale)
+                    : UnsignedWords.multiply(magnitude, powerOfFive(exactFractionDigits));
+            digits = decimalDigits(coefficient);
+            if (!scientific) {
+                appendedZeros = fractionDigits - exactFractionDigits;
+            }
+        } else {
+            // 此分支的十进制缩放受格式范围约束，而不随任意大的 fractionDigits 增长。
+            Rational rational = scaledDecimal(magnitude, scale, Math.toIntExact(decimalShift));
+            UnsignedWords.Division division = UnsignedWords.divide(rational.numerator(), rational.denominator());
+            long[] coefficient = division.quotient();
+            int half = UnsignedWords.compare(UnsignedWords.left(division.remainder(), 1), rational.denominator());
+            if (half > 0 || (half == 0 && UnsignedWords.bit(coefficient, 0))) {
+                coefficient = add(coefficient, new long[] {1});
+            }
+            digits = decimalDigits(coefficient);
+            if (scientific && digits.length() > fractionDigits + 1L) {
+                // 尾数从 9.99... 进位到 10.00...，末位为零，可精确移走并增加指数。
+                digits = digits.substring(0, digits.length() - 1);
+                exponent++;
+            }
+        }
+        return scientific ? scientificFixed(negative, digits, fractionDigits, exponent)
+                : plainFixed(negative, digits, appendedZeros, fractionDigits);
+    }
+
+    private record Rational(long[] numerator, long[] denominator) {
+    }
+
+    /** magnitude * 2^scale * 10^decimalShift 的精确有理数；本方法的缩放参数均受 Binary256 格式约束。 */
+    private static Rational scaledDecimal(long[] magnitude, int scale, int decimalShift) {
+        long[] numerator = magnitude, denominator = new long[] {1};
+        if (decimalShift >= 0) {
+            numerator = UnsignedWords.multiply(numerator, powerOfFive(decimalShift));
+        } else {
+            denominator = powerOfFive(-decimalShift);
+        }
+        int binaryShift = scale + decimalShift;
+        if (binaryShift >= 0) {
+            numerator = UnsignedWords.left(numerator, binaryShift);
+        } else {
+            denominator = UnsignedWords.left(denominator, -binaryShift);
+        }
+        return new Rational(numerator, denominator);
+    }
+
+    /** 真正的 floor(log10(x))，不使用可能因最短表示进位而改变的十进制指数。 */
+    private static int decimalExponent(long[] magnitude, int scale) {
+        int binaryExponent = scale + UnsignedWords.bitLength(magnitude) - 1;
+        int exponent = (int) Math.floorDiv(binaryExponent * 78913L, 262144);
+        Rational rational = scaledDecimal(magnitude, scale, -exponent);
+        long[] numerator = rational.numerator(), denominator = rational.denominator();
+        while (UnsignedWords.compare(numerator, denominator) < 0) {
+            numerator = multiplyAdd(numerator, 10, 0);
+            exponent--;
+        }
+        long[] tenDenominator = multiplyAdd(denominator, 10, 0);
+        while (UnsignedWords.compare(numerator, tenDenominator) >= 0) {
+            denominator = tenDenominator;
+            tenDenominator = multiplyAdd(denominator, 10, 0);
+            exponent++;
+        }
+        return exponent;
+    }
+
+    private static long[] right(long[] value, int distance) {
+        int whole = distance / 64, bits = distance & 63;
+        long[] result = new long[value.length - whole];
+        for (int i = 0; i < result.length; i++) {
+            result[i] = value[whole + i] >>> bits;
+            if (bits != 0) {
+                result[i] |= UnsignedWords.word(value, whole + i + 1) << (64 - bits);
+            }
+        }
+        return UnsignedWords.trim(result);
+    }
+
+    /** 独占副本按 10^9 分组除法转为十进制，不修改输入或缓存中的五次幂。 */
+    private static String decimalDigits(long[] value) {
+        int bits = UnsignedWords.bitLength(value);
+        if (bits == 0) {
+            return "0";
+        }
+        long[] work = Arrays.copyOf(value, value.length);
+        char[] chars = new char[(int) (bits * 30103L / 100000) + 1];
+        int position = chars.length, length = work.length;
+        while (length != 0) {
+            long remainder = 0;
+            for (int i = length - 1; i >= 0; i--) {
+                // remainder < 10^9，拼接 32 位后仍在有符号 long 的正数范围内。
+                long pair = (remainder << 32) | (work[i] >>> 32);
+                long high = pair / 1_000_000_000;
+                remainder = pair % 1_000_000_000;
+                pair = (remainder << 32) | (work[i] & 0xffff_ffffL);
+                work[i] = (high << 32) | (pair / 1_000_000_000);
+                remainder = pair % 1_000_000_000;
+            }
+            while (length != 0 && work[length - 1] == 0) {
+                length--;
+            }
+            int count = 0;
+            do {
+                chars[--position] = (char) ('0' + remainder % 10);
+                remainder /= 10;
+                count++;
+            } while (length == 0 ? remainder != 0 : count < 9);
+        }
+        return new String(chars, position, chars.length - position);
+    }
+
+    private static int checkLength(long length) {
+        if (length > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Formatted decimal exceeds the maximum string length");
+        }
+        return (int) length;
+    }
+
+    private static String plainFixed(boolean negative, String digits, int appendedZeros, int fractionDigits) {
+        long totalDigits = digits.length() + (long) appendedZeros;
+        int length = checkLength((negative ? 1L : 0L) + Math.max(totalDigits, fractionDigits + 1L)
+                + (fractionDigits == 0 ? 0 : 1));
+        char[] result = new char[length];
+        Arrays.fill(result, '0');
+        int offset = negative ? 1 : 0;
+        if (negative) {
+            result[0] = '-';
+        }
+        int point = Math.toIntExact(totalDigits - fractionDigits);
+        if (fractionDigits == 0) {
+            digits.getChars(0, digits.length(), result, offset);
+        } else if (point <= 0) {
+            result[offset + 1] = '.';
+            digits.getChars(0, digits.length(), result, offset + 2 - point);
+        } else {
+            result[offset + point] = '.';
+            int integerDigits = Math.min(point, digits.length());
+            digits.getChars(0, integerDigits, result, offset);
+            digits.getChars(integerDigits, digits.length(), result, offset + point + 1);
+        }
+        return new String(result);
+    }
+
+    private static String scientificFixed(boolean negative, String digits, int fractionDigits, int exponent) {
+        String exponentText = Integer.toString(exponent);
+        int length = checkLength((negative ? 1L : 0L) + 1 + (fractionDigits == 0 ? 0L : 1L + fractionDigits)
+                + 1 + exponentText.length());
+        char[] result = new char[length];
+        Arrays.fill(result, '0');
+        int offset = negative ? 1 : 0;
+        if (negative) {
+            result[0] = '-';
+        }
+        result[offset] = digits.charAt(0);
+        if (fractionDigits != 0) {
+            result[offset + 1] = '.';
+            digits.getChars(1, digits.length(), result, offset + 2);
+        }
+        int exponentPosition = length - exponentText.length() - 1;
+        result[exponentPosition] = 'e';
+        exponentText.getChars(0, exponentText.length(), result, exponentPosition + 1);
+        return new String(result);
     }
 
     /**

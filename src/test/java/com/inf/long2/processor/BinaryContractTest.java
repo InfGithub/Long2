@@ -56,6 +56,9 @@ class BinaryContractTest extends ProcessorTestSupport {
                             case UNORDERED -> 2;
                         };
                     }
+                    static <T extends com.inf.long2.Binary<T>> String format(T value, int digits) {
+                        return value.toString(digits) + value.toScientificString(digits);
+                    }
                 }
                 """);
     }
@@ -120,6 +123,18 @@ class BinaryContractTest extends ProcessorTestSupport {
         assertFalse(result.success(), result.messages());
         assertTrue(result.messages().contains("must declare: public static fixture.Target of(" + parameterType + " "),
                 result.messages());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"toString", "toScientificString"})
+    void requiresTheFixedFractionOverloads(String methodName) throws IOException {
+        String declaration = "public java.lang.String " + methodName
+                + "(int value0) { throw new UnsupportedOperationException(); }\n";
+        String source = fixture(DECLARATIONS);
+        assertTrue(source.contains(declaration));
+        Compilation result = compile(source.replace(declaration, ""));
+        assertFalse(result.success(), result.messages());
+        assertTrue(result.messages().contains(methodName + "(int)"), result.messages());
     }
 
     private static String fixture(String declarations) {

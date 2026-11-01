@@ -1290,8 +1290,18 @@ public final class Binary256 implements Binary<Binary256> {
     }
 
     @Override
+    public String toString(int fractionDigits) {
+        return Binary256Decimal.format(this, false, fractionDigits);
+    }
+
+    @Override
     public String toScientificString() {
         return Binary256Decimal.format(this, true);
+    }
+
+    @Override
+    public String toScientificString(int fractionDigits) {
+        return Binary256Decimal.format(this, true, fractionDigits);
     }
 
     private long primitiveBits(int precision, int emin, int emax, int exponentBits) {

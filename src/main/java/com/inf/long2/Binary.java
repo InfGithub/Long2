@@ -245,12 +245,33 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     String toString();
 
     /**
+     * 将当前精确二进制数值直接按最近偶数规则舍入为普通十进制，小数点后固定 fractionDigits 位。
+     * 不足的位数补零，fractionDigits 为零时省略小数点，不使用指数或区域格式。
+     * 保留负号，包括负零和负数舍入得到的零；无穷和 NaN 的拼写与 toString() 相同。
+     * 不先经过最短十进制表示，不承诺解析后恢复原值。
+     *
+     * @throws IllegalArgumentException fractionDigits 小于零（包括特殊值），或输出长度超过 Integer.MAX_VALUE
+     */
+    String toString(int fractionDigits);
+
+    /**
      * 将与 toString() 相同的最短可往返十进制数写为科学计数法。
      * 非零有限数的小数点前恰好一位，小数点后至少一位，使用小写 e，
      * 指数不带多余前导零或正号，例如 "1.0e0"、"1.235e2"、"1.25e-3"。
      * 正负零分别返回 "0.0e0" 和 "-0.0e0"，无穷和 NaN 的拼写与 toString() 相同。
      */
     String toScientificString();
+
+    /**
+     * 将当前精确二进制数值直接按最近偶数规则舍入为科学计数法，尾数小数点后固定 fractionDigits 位。
+     * 非零结果小数点前恰好一位，不足位数补零；进位后重新归一化并调整指数。
+     * fractionDigits 为零时省略小数点；固定使用小写 e，指数不带多余前导零或正号。
+     * 保留负号，正负零的指数均为零，例如 "-0e0" 或 "-0.00e0"。
+     * 无穷和 NaN 的拼写与 toString() 相同；不先经过最短十进制表示，不承诺解析后恢复原值。
+     *
+     * @throws IllegalArgumentException fractionDigits 小于零（包括特殊值），或输出长度超过 Integer.MAX_VALUE
+     */
+    String toScientificString(int fractionDigits);
 
     /**
      * 对精确和进行一次舍入，异号非零数精确抵消时得到正零，同号零相加保留符号。
