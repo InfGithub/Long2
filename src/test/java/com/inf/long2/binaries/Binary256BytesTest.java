@@ -3,6 +3,7 @@ package com.inf.long2.binaries;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertThrowsExactly;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -61,6 +62,43 @@ class Binary256BytesTest {
         }
     }
 
+    @Test
+    void restoresKnownBigEndianBytesWithoutSignedByteExtension() {
+        byte[] bytes = HexFormat.of().parseHex(
+                "0123456789abcdeffedcba987654321000112233445566778899aabbccddeeff");
+        Binary256 value = Binary256.of(bytes);
+        assertEquals(0x0123_4567_89ab_cdefL, value.getRawLong(0));
+        assertEquals(0xfedc_ba98_7654_3210L, value.getRawLong(1));
+        assertEquals(0x0011_2233_4455_6677L, value.getRawLong(2));
+        assertEquals(0x8899_aabb_ccdd_eeffL, value.getRawLong(3));
+        assertArrayEquals(bytes, value.toBytes());
+    }
+
+    @Test
+    void rejectsNullAndEveryIncorrectLengthWithoutPaddingOrTruncation() {
+        assertThrowsExactly(NullPointerException.class, () -> Binary256.of((byte[]) null));
+        for (int length : new int[] {0, 1, 7, 8, 16, 24, 31, 33, 40, 64, 1000}) {
+            assertThrowsExactly(IllegalArgumentException.class, () -> Binary256.of(new byte[length]));
+        }
+    }
+
+    @Test
+    void neitherModifiesNorRetainsTheInputArray() {
+        for (Binary256 original : List.of(Binary256.ZERO, Binary256.NEGATIVE_ZERO, Binary256.ONE,
+                Binary256.MIN_VALUE, Binary256.MAX_VALUE, Binary256.POSITIVE_INFINITY,
+                Binary256.fromRawBits(0xffff_f000_0000_0001L, 2, 3, 4))) {
+            byte[] input = original.toBytes(), snapshot = input.clone();
+            Binary256 restored = Binary256.of(input);
+            assertArrayEquals(snapshot, input);
+            Arrays.fill(input, (byte) 0x5a);
+            assertArrayEquals(snapshot, restored.toBytes());
+            assertEquals(Binary256Reference.raw(original), Binary256Reference.raw(restored));
+            byte[] output = restored.toBytes();
+            Arrays.fill(output, (byte) 0);
+            assertArrayEquals(snapshot, restored.toBytes());
+        }
+    }
+
     private static void assertEncoding(Binary256 value) {
         ByteBuffer expected = ByteBuffer.allocate(32).order(ByteOrder.BIG_ENDIAN);
         for (int i = 0; i < 4; i++) {
@@ -73,5 +111,9 @@ class Binary256BytesTest {
         Binary256 restored = Binary256.fromRawBits(encoded.getLong(), encoded.getLong(), encoded.getLong(), encoded.getLong());
         // 使用原始位比较，equals 会忽略不同 NaN 编码之间的差异。
         assertEquals(Binary256Reference.raw(value), Binary256Reference.raw(restored));
+        Binary256 parsed = Binary256.of(expected.array());
+        assertEquals(Binary256Reference.raw(value), Binary256Reference.raw(parsed));
+        assertArrayEquals(expected.array(), parsed.toBytes());
+        assertEquals(Binary256Reference.raw(value), Binary256Reference.raw(Binary256.of(actual)));
     }
 }

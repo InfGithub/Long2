@@ -101,6 +101,32 @@ public final class Binary256 implements Binary<Binary256> {
     }
 
     /**
+     * 从恰好 32 字节的大端序原始编码恢复数值，所有位模式均可接受。
+     * 与 toBytes() 逐位互逆，包括 NaN 的符号、payload 和 signaling 位，不执行数值转换。
+     * 不修改或持有输入数组。
+     *
+     * @throws NullPointerException 数组为 null
+     * @throws IllegalArgumentException 数组长度不等于 32
+     * @see Binary#of(byte[])
+     */
+    public static Binary256 of(byte[] bytes) {
+        Objects.requireNonNull(bytes);
+        if (bytes.length != 32) {
+            throw new IllegalArgumentException("bytes must contain exactly 32 elements");
+        }
+        return fromRawBits(readRawLong(bytes, 0), readRawLong(bytes, 8),
+                readRawLong(bytes, 16), readRawLong(bytes, 24));
+    }
+
+    private static long readRawLong(byte[] bytes, int offset) {
+        long word = 0;
+        for (int index = 0; index < 8; index++) {
+            word = (word << 8) | (bytes[offset + index] & 0xffL);
+        }
+        return word;
+    }
+
+    /**
      * 返回原始编码的一个 long 分组，索引 0 为最高组，3 为最低组。
      *
      * @throws IndexOutOfBoundsException 索引小于 0 或大于 3

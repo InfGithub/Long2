@@ -141,6 +141,19 @@ public interface Binary<T extends Binary<T>> extends Comparable<T> {
     }
 
     /**
+     * 从当前实现自己的大端序原始编码恢复数值，与 {@link #toBytes()} 逐位互逆。
+     * 具体实现须说明所需字节长度和编码布局；不同实现之间不承诺字节编码兼容。
+     * 不补零、不截断或舍入，完整保留正负零及 NaN 的符号、payload 和 signaling 位。
+     * 不修改或持有输入数组，构造后修改数组不影响结果。
+     *
+     * @throws NullPointerException 数组为 null
+     * @throws IllegalArgumentException 数组长度不符合当前实现的编码要求
+     */
+    static Binary<?> of(byte[] bytes) {
+        return null;
+    }
+
+    /**
      * 判断文本是否符合 {@link #of(String)} 接受的语法，null、空串或非法格式返回 false。
      * 仅校验语法，不要求数值能被目标格式精确表示或舍入为有限非零数；
      * 合法的超长指数、NaN 及正负无穷同样返回 true。

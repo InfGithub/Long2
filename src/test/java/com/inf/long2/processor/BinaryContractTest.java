@@ -32,6 +32,7 @@ class BinaryContractTest extends ProcessorTestSupport {
             public static Target of(float value) { return null; }
             public static Target of(double value) { return null; }
             public static Target of(java.lang.String value) { return null; }
+            public static Target of(byte[] value) { return null; }
             public static Target of(com.inf.long2.Int<?> value) { return null; }
             public static Target of(com.inf.long2.Binary<?> value) { return null; }
             public static boolean isValid(java.lang.String value) { return false; }
@@ -63,6 +64,9 @@ class BinaryContractTest extends ProcessorTestSupport {
                     static byte[] bytes(com.inf.long2.Binary<?> value) {
                         return value.toBytes();
                     }
+                    static Target restore(byte[] value) {
+                        return Target.of(value);
+                    }
                     static boolean valid(String value) {
                         return Target.isValid(value);
                     }
@@ -86,7 +90,7 @@ class BinaryContractTest extends ProcessorTestSupport {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"long", "float", "double", "java.lang.String", "com.inf.long2.Int<?>", "com.inf.long2.Binary<?>"})
+    @ValueSource(strings = {"long", "float", "double", "java.lang.String", "byte[]", "com.inf.long2.Int<?>", "com.inf.long2.Binary<?>"})
     void rejectsMissingStaticFactory(String parameterType) throws IOException {
         String declarations = DECLARATIONS.replace(
                 "public static Target of(" + parameterType + " value) { return null; }", "");

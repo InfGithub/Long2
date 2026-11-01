@@ -15,6 +15,10 @@ public final class Binary256Baseline implements Binary<Binary256Baseline> {
         throw new UnsupportedOperationException("Decimal conversion is outside the frozen baseline");
     }
 
+    public static Binary256Baseline of(byte[] bytes) {
+        throw new UnsupportedOperationException("Byte conversion is outside the frozen baseline");
+    }
+
     public static boolean isValid(String value) {
         throw new UnsupportedOperationException("Text validation is outside the frozen baseline");
     }
